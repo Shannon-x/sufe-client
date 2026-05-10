@@ -30,7 +30,7 @@ DEST_ROOT="${REPO_ROOT}/android/app/src/main/jniLibs"
 # Map Android ABI -> MetaCubeX release artifact name.
 mihomo_artifact() {
     case "$1" in
-        arm64-v8a)    echo "mihomo-android-arm64-v8a-${VERSION}.gz" ;;
+        arm64-v8a)    echo "mihomo-android-arm64-v8-${VERSION}.gz" ;;
         armeabi-v7a)  echo "mihomo-android-armv7-${VERSION}.gz" ;;
         x86_64)       echo "mihomo-android-amd64-${VERSION}.gz" ;;
         *) echo "unsupported abi: $1" >&2; exit 2 ;;
