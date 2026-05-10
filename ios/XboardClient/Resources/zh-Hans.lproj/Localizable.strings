@@ -1,0 +1,152 @@
+/* Common */
+"common.ok" = "好";
+"common.close" = "关闭";
+"common.notice" = "提示";
+
+/* Tabs */
+"tabs.home" = "主页";
+"tabs.connect" = "连接";
+"tabs.plans" = "套餐";
+"tabs.tickets" = "工单";
+
+/* Auth — login */
+"auth.login.title" = "登录 Xboard";
+"auth.login.subtitle" = "输入你的账户继续";
+"auth.login.submit" = "登录";
+"auth.email" = "邮箱";
+"auth.password" = "密码";
+"auth.password.new" = "新密码";
+"auth.email_code" = "邮箱验证码";
+"auth.email_code.send" = "发送";
+"auth.invite_optional" = "邀请码（可选）";
+"auth.password_updated" = "密码已更新";
+
+/* Auth — register / forget */
+"auth.register.title" = "注册";
+"auth.register.submit" = "注册";
+"auth.register.cta" = "注册新账户";
+"auth.forget" = "忘记密码";
+"auth.forget.title" = "找回密码";
+"auth.forget.submit" = "重置密码";
+
+/* Home */
+"home.subscribe.title" = "当前订阅";
+"home.subscribe.empty" = "尚未订阅任何套餐";
+"home.menu.orders" = "订单";
+"home.menu.notices" = "公告";
+"home.user.email" = "邮箱";
+"home.user.balance" = "余额";
+"home.user.expires_at" = "到期时间";
+"home.logout" = "退出登录";
+
+/* Connect */
+"connect.title" = "连接";
+"connect.mode.tun" = "TUN";
+"connect.mode.system_proxy" = "系统代理";
+"connect.status.disconnected" = "未连接";
+"connect.status.fetching" = "正在拉取订阅";
+"connect.status.writing" = "写入配置";
+"connect.status.spawning" = "启动内核";
+"connect.status.elevating" = "请求权限";
+"connect.status.applying_route" = "应用路由";
+"connect.status.connected_tun" = "已连接（TUN）";
+"connect.status.connected_proxy" = "已连接（系统代理）";
+"connect.node.current" = "当前节点";
+"connect.node.none" = "未选择";
+"connect.node.pick" = "选择节点";
+"connect.traffic.title" = "实时流量";
+
+/* Nodes */
+"nodes.title" = "节点";
+"nodes.test_latency" = "测延迟";
+"nodes.testing" = "测试中";
+"nodes.timeout" = "超时";
+
+/* Plans */
+"plans.empty" = "暂无套餐";
+"plans.purchase" = "购买";
+"plans.tag.not_selling" = "已停售";
+"plans.tag.no_renew" = "不可续费";
+"plans.transfer.gb" = "流量 %lld GB";
+"plans.period.month" = "月付";
+"plans.period.quarter" = "季付";
+"plans.period.half_year" = "半年付";
+"plans.period.year" = "年付";
+"plans.period.two_year" = "两年付";
+"plans.period.three_year" = "三年付";
+"plans.period.onetime" = "一次性";
+"plans.period.reset" = "流量重置";
+
+/* Purchase */
+"purchase.section.period" = "周期";
+"purchase.section.coupon" = "优惠码";
+"purchase.section.payment" = "支付方式";
+"purchase.coupon.placeholder" = "输入优惠码";
+"purchase.submit" = "提交订单";
+"purchase.gateway.title" = "请前往支付页面完成付款";
+"purchase.gateway.open" = "打开支付页面";
+"purchase.gateway.no_redirect" = "未返回支付链接，请手动确认";
+"purchase.gateway.refresh" = "刷新状态";
+"purchase.gateway.cancel" = "取消订单";
+"purchase.paid.title" = "支付成功";
+"purchase.status.checking" = "正在确认订单状态";
+"purchase.status.pending" = "待支付";
+"purchase.status.activating" = "开通中";
+"purchase.status.cancelled" = "已取消";
+"purchase.status.completed" = "已完成";
+"purchase.status.discounted" = "已抵扣";
+"purchase.payment.fee_fixed" = "手续费 %@";
+"purchase.payment.fee_percent" = "手续费 %.2f%%";
+
+/* Orders */
+"orders.title" = "订单";
+"orders.empty" = "没有订单";
+"orders.action.cancel" = "取消订单";
+"orders.col.kind" = "类型";
+"orders.col.period" = "周期";
+"orders.col.amount" = "金额";
+"orders.col.created_at" = "创建时间";
+"orders.kind.new" = "新购";
+"orders.kind.renew" = "续费";
+"orders.kind.upgrade" = "升级";
+"orders.kind.reset" = "重置";
+"orders.status.pending" = "待支付";
+"orders.status.activating" = "开通中";
+"orders.status.cancelled" = "已取消";
+"orders.status.completed" = "已完成";
+"orders.status.discounted" = "已抵扣";
+
+/* Tickets */
+"tickets.title" = "工单";
+"tickets.empty" = "没有工单";
+"tickets.detail.title" = "工单详情";
+"tickets.created_at" = "创建于";
+"tickets.no_messages" = "暂无消息";
+"tickets.close" = "关闭工单";
+"tickets.closed" = "工单已关闭";
+"tickets.closed.hint" = "如有新问题请重新发起工单";
+"tickets.confirm.close" = "确定要关闭这条工单吗？";
+"tickets.confirm.yes" = "确定";
+"tickets.confirm.no" = "取消";
+"tickets.reply.placeholder" = "输入回复内容";
+"tickets.reply.send" = "发送";
+"tickets.reply.empty" = "回复内容不能为空";
+"tickets.level.low" = "低";
+"tickets.level.normal" = "中";
+"tickets.level.high" = "高";
+"tickets.status.open" = "处理中";
+"tickets.status.closed" = "已关闭";
+"tickets.composer.new" = "新建工单";
+"tickets.composer.subject" = "主题";
+"tickets.composer.subject.placeholder" = "简要描述问题";
+"tickets.composer.level" = "优先级";
+"tickets.composer.message" = "正文";
+"tickets.composer.message.placeholder" = "详细描述问题、复现步骤等";
+"tickets.composer.cancel" = "取消";
+"tickets.composer.submit" = "提交";
+"tickets.composer.fill_all" = "请填写主题和正文";
+
+/* Notices */
+"notices.title" = "公告";
+"notices.empty" = "暂无公告";
+"notices.untitled" = "无标题";

@@ -1,0 +1,26 @@
+[package]
+name = "xboard-helper"
+description = "macOS root LaunchDaemon that owns the mihomo subprocess on behalf of the unprivileged UI."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "xboard-helper"
+path = "src/main.rs"
+
+[dependencies]
+# Reuse the IPC envelope so launcher and helper can never drift.
+xboard-core = { path = "../core" }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+parking_lot = { workspace = true }
+anyhow = { workspace = true }

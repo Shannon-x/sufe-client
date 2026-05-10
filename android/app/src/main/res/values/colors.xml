@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Brand seeds. The Compose theme derives Material3 color schemes
+         from these, so changing them here propagates through the UI. -->
+    <color name="brand_primary">#FF4F46E5</color>
+    <color name="brand_primary_container">#FFE0E7FF</color>
+    <color name="brand_secondary">#FF06B6D4</color>
+    <color name="brand_tertiary">#FFF59E0B</color>
+
+    <!-- Status surface tints (success / warning / error). -->
+    <color name="status_success">#FF16A34A</color>
+    <color name="status_warning">#FFD97706</color>
+    <color name="status_error">#FFDC2626</color>
+
+    <!-- Splash (used pre-Compose by Theme.Splash). -->
+    <color name="splash_background">#FFFFFFFF</color>
+    <color name="splash_background_dark">#FF0B1020</color>
+</resources>

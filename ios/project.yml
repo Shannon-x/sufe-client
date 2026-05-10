@@ -1,0 +1,127 @@
+# XcodeGen spec for xboard-client iOS.
+#
+# We don't check `.xcodeproj` into git (binary noise that conflicts on every
+# rebase). Run `just ios-bootstrap` to materialize it from this file.
+#
+# Two targets:
+#   - XboardClient   : the SwiftUI app that the user opens.
+#   - PacketTunnel   : NetworkExtension provider that hosts sing-box (Libbox).
+# They share a *single* App Group (group.com.xboard.client.ios) so the app
+# can hand the rendered sing-box JSON to the NE through UserDefaults, plus
+# a Keychain access group for the bearer token.
+
+name: XboardClient
+options:
+  bundleIdPrefix: com.xboard.client
+  deploymentTarget:
+    iOS: "16.0"
+  developmentLanguage: zh-Hans
+  groupSortPosition: top
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    DEVELOPMENT_TEAM: "$(DEVELOPMENT_TEAM)"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    OTHER_LDFLAGS: "$(inherited)"
+    # The Vendor/Libbox.xcframework lives outside the project root; tell
+    # Xcode to search there for both XboardClient and PacketTunnel.
+    FRAMEWORK_SEARCH_PATHS:
+      - "$(inherited)"
+      - "$(PROJECT_DIR)/Vendor"
+
+# ---------------------------------------------------------------- //
+#  Targets                                                          //
+# ---------------------------------------------------------------- //
+
+targets:
+  XboardClient:
+    type: application
+    platform: iOS
+    sources:
+      - path: XboardClient
+      - path: Shared
+    resources:
+      - path: XboardClient/Resources
+    info:
+      path: XboardClient/Info.plist
+      properties:
+        CFBundleDisplayName: Xboard
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        UILaunchScreen: {}
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIRequiresFullScreen: false
+        # Default backend; overridable at runtime via the secure-store key
+        # "xboard.backend_base_url" (no in-app UI for it).
+        XboardDefaultBackendURL: "https://your-xboard-panel.example.com"
+        # Surfaces in Settings → VPN. Apple shows this string verbatim.
+        NEAppProxyEnabled: false
+    entitlements:
+      path: XboardClient/XboardClient.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        com.apple.security.application-groups:
+          - group.com.xboard.client.ios
+        keychain-access-groups:
+          - "$(AppIdentifierPrefix)com.xboard.client"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.xboard.client
+        TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
+    dependencies:
+      - target: PacketTunnel
+        embed: true
+      - framework: Vendor/Libbox.xcframework
+        embed: true
+        codeSign: true
+      # The xboard-core static library + UniFFI bindings are produced by
+      # `just core-ios` and `just ios-bindings`. The XCFramework drops at
+      # Vendor/XboardCore.xcframework; the .swift files are committed to
+      # `Shared/Generated/` and picked up by the `Shared` source set above.
+      - framework: Vendor/XboardCore.xcframework
+        embed: false
+
+  PacketTunnel:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: PacketTunnel
+      - path: Shared
+    info:
+      path: PacketTunnel/Info.plist
+      properties:
+        CFBundleDisplayName: Xboard Tunnel
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "1"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.networkextension.packet-tunnel
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).PacketTunnelProvider
+    entitlements:
+      path: PacketTunnel/PacketTunnel.entitlements
+      properties:
+        com.apple.developer.networking.networkextension:
+          - packet-tunnel-provider
+        com.apple.security.application-groups:
+          - group.com.xboard.client.ios
+        keychain-access-groups:
+          - "$(AppIdentifierPrefix)com.xboard.client"
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.xboard.client.PacketTunnel
+        # NE memory cap is 50MB on iOS — keep symbol stripping aggressive.
+        DEAD_CODE_STRIPPING: YES
+        STRIP_INSTALLED_PRODUCT: YES
+    dependencies:
+      - framework: Vendor/Libbox.xcframework
+        embed: false
+        codeSign: false
+      - framework: Vendor/XboardCore.xcframework
+        embed: false

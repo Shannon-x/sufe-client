@@ -1,0 +1,4 @@
+# Holds Libbox.xcframework + XboardCore.xcframework fetched by:
+#   ci/scripts/install-libbox-ios.sh
+#   ci/scripts/build-core-ios.sh
+# Both .xcframework dirs are gitignored.

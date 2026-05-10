@@ -1,0 +1,275 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    English overrides. Mirrors desktop/src/i18n/en-US.ts. Keys not
+    overridden here fall through to values/strings.xml (Chinese).
+-->
+<resources>
+
+    <string name="app_name">Xboard</string>
+    <string name="app_tagline">High-performance multi-platform proxy client based on mihomo</string>
+
+    <!-- Login -->
+    <string name="login_heading">Sign in to Xboard</string>
+    <string name="login_email">Email</string>
+    <string name="login_password">Password</string>
+    <string name="login_submit">Sign in</string>
+    <string name="login_submitting">Signing in…</string>
+    <string name="login_fill_all">Please fill in all fields</string>
+    <string name="login_success">Welcome %1$s</string>
+    <string name="login_captcha_required">Please complete the captcha first</string>
+    <string name="login_to_register">Create account</string>
+    <string name="login_to_forget">Forgot password?</string>
+
+    <!-- Register -->
+    <string name="register_heading">Create an account</string>
+    <string name="register_tagline">Email and password are all you need</string>
+    <string name="register_email">Email</string>
+    <string name="register_code">Verification code</string>
+    <string name="register_code_send">Send code</string>
+    <string name="register_code_resend">Resend in %1$ds</string>
+    <string name="register_code_sent">Verification code sent — check your inbox</string>
+    <string name="register_password">Password (min 8 chars)</string>
+    <string name="register_password_confirm">Confirm password</string>
+    <string name="register_invite">Invite code</string>
+    <string name="register_invite_required">This site requires an invite code</string>
+    <string name="register_fill_all">Please fill in all required fields</string>
+    <string name="register_invalid_email">Invalid email format</string>
+    <string name="register_suffix_hint">Allowed email suffixes: %1$s</string>
+    <string name="register_suffix_mismatch">Email must end with %1$s</string>
+    <string name="register_password_too_short">Password must be at least 8 chars</string>
+    <string name="register_password_mismatch">Passwords do not match</string>
+    <string name="register_tos">I agree to the Terms of Service</string>
+    <string name="register_must_agree_tos">Please agree to the Terms of Service first</string>
+    <string name="register_submit">Sign up</string>
+    <string name="register_submitting">Signing up…</string>
+    <string name="register_success">Welcome %1$s</string>
+    <string name="register_back_to_login">Back to login</string>
+
+    <!-- Forget password -->
+    <string name="forget_heading">Recover password</string>
+    <string name="forget_tagline">Enter your email and verification code</string>
+    <string name="forget_email">Email</string>
+    <string name="forget_code">Verification code</string>
+    <string name="forget_password">New password (min 8 chars)</string>
+    <string name="forget_password_confirm">Confirm new password</string>
+    <string name="forget_submit">Reset password</string>
+    <string name="forget_submitting">Submitting…</string>
+    <string name="forget_fill_all">Please fill in all required fields</string>
+    <string name="forget_success">Password reset — please sign in with your new password</string>
+
+    <!-- Home -->
+    <string name="home_welcome">Welcome, %1$s</string>
+    <string name="home_plan">Plan</string>
+    <string name="home_balance">Balance</string>
+    <string name="home_commission">Commission</string>
+    <string name="home_expiry">Expires</string>
+    <string name="home_expiry_never">Never</string>
+    <string name="home_traffic">Traffic</string>
+    <string name="home_used">Used</string>
+    <string name="home_total">Total</string>
+    <string name="home_refresh">Refresh</string>
+    <string name="home_logout">Sign out</string>
+    <string name="home_subscribe">Subscription URL</string>
+    <string name="home_copy">Copy</string>
+    <string name="home_copied">Copied to clipboard</string>
+    <string name="home_not_subscribed">No subscription yet</string>
+    <string name="home_notices">Notices</string>
+    <string name="home_menu_plans">Plans</string>
+    <string name="home_menu_orders">Orders</string>
+    <string name="home_menu_tickets">Tickets</string>
+    <string name="home_menu_notices">Notices</string>
+    <string name="home_menu_kernel_info">Kernel info</string>
+    <string name="home_menu_check_update">Check for update</string>
+    <string name="home_cue_none_title">No active subscription</string>
+    <string name="home_cue_none_body">Browse the plans page to activate proxy service.</string>
+    <string name="home_cue_expired_title">Subscription expired</string>
+    <string name="home_cue_expired_body">Your subscription has expired and proxy service is paused.</string>
+    <string name="home_cue_expiring_title">Subscription expiring soon</string>
+    <string name="home_cue_expiring_body">Your subscription expires on %1$s — renew early to avoid interruption.</string>
+    <string name="home_cue_traffic_low_title">Traffic almost depleted</string>
+    <string name="home_cue_traffic_low_body">Over 95%% used — consider upgrading or wait for the next cycle reset.</string>
+    <string name="home_cue_browse">Browse plans</string>
+    <string name="home_cue_renew">Renew now</string>
+    <string name="home_cue_upgrade">Upgrade</string>
+
+    <!-- Notices -->
+    <string name="notices_title">Notices</string>
+    <string name="notices_back">Back</string>
+    <string name="notices_refresh">Refresh</string>
+    <string name="notices_empty">No notices</string>
+    <string name="notices_untitled">(no title)</string>
+
+    <!-- Plans -->
+    <string name="plans_title">Plans</string>
+    <string name="plans_back">Back</string>
+    <string name="plans_refresh">Refresh</string>
+    <string name="plans_empty">No plans available</string>
+    <string name="plans_transfer_enable">Includes %1$s GB</string>
+    <string name="plans_no_prices">This plan has no billing periods configured</string>
+    <string name="plans_reset_price">Traffic reset</string>
+    <string name="plans_buy">Buy</string>
+    <string name="plans_period_month">Monthly</string>
+    <string name="plans_period_quarter">Quarterly</string>
+    <string name="plans_period_half_year">Half-year</string>
+    <string name="plans_period_year">Yearly</string>
+    <string name="plans_period_two_year">2 years</string>
+    <string name="plans_period_three_year">3 years</string>
+    <string name="plans_period_onetime">One-time</string>
+    <string name="plans_tag_current">Current plan</string>
+    <string name="plans_tag_not_selling">Discontinued</string>
+    <string name="plans_tag_no_renew">Non-renewable</string>
+
+    <!-- Purchase -->
+    <string name="purchase_title">Confirm purchase</string>
+    <string name="purchase_plan">Plan</string>
+    <string name="purchase_period">Period</string>
+    <string name="purchase_price">Price</string>
+    <string name="purchase_coupon_label">Coupon</string>
+    <string name="purchase_coupon_placeholder">Enter coupon (optional)</string>
+    <string name="purchase_payment_method">Payment method</string>
+    <string name="purchase_payment_method_loading">Loading payment methods…</string>
+    <string name="purchase_payment_method_empty">No payment methods configured. Contact the site admin.</string>
+    <string name="purchase_cancel">Cancel</string>
+    <string name="purchase_submit">Pay now</string>
+    <string name="purchase_submitting">Creating order…</string>
+    <string name="purchase_fee_fixed">+ Fee ¥%1$s</string>
+    <string name="purchase_fee_percent">+ %1$s%%</string>
+    <string name="purchase_pending_title">Awaiting payment</string>
+    <string name="purchase_redirect_opened">Payment page opened in browser. Refresh order status when done.</string>
+    <string name="purchase_qr_show">Scan the QR code or open the link below to pay:</string>
+    <string name="purchase_qr_copy">Copy link</string>
+    <string name="purchase_qr_copied">Link copied to clipboard</string>
+    <string name="purchase_balance_paid">Paid from balance — order completed.</string>
+    <string name="purchase_status_refresh">Refresh order status</string>
+    <string name="purchase_status_checking">Checking…</string>
+    <string name="purchase_status_pending">Order still awaiting payment</string>
+    <string name="purchase_status_activating">Payment received, activating…</string>
+    <string name="purchase_status_completed">Order completed.</string>
+    <string name="purchase_status_cancelled">Order cancelled</string>
+    <string name="purchase_status_unknown">Order status: %1$d</string>
+    <string name="purchase_close">Close</string>
+    <string name="purchase_cancel_order">Cancel order</string>
+    <string name="purchase_cancel_confirm">Cancel this order?</string>
+    <string name="purchase_cancel_yes">Yes, cancel</string>
+    <string name="purchase_cancel_no">Keep</string>
+    <string name="purchase_cancelled">Order cancelled</string>
+    <string name="purchase_error_pick_payment">Please pick a payment method</string>
+    <string name="purchase_error_no_trade_no">Could not get trade number — please retry</string>
+    <string name="purchase_error_open_url">Could not open payment page: %1$s</string>
+
+    <!-- Orders -->
+    <string name="orders_title">Orders</string>
+    <string name="orders_back">Back</string>
+    <string name="orders_refresh">Refresh</string>
+    <string name="orders_empty">No orders</string>
+    <string name="orders_col_trade_no">Trade No</string>
+    <string name="orders_col_kind">Kind</string>
+    <string name="orders_col_period">Period</string>
+    <string name="orders_col_amount">Amount</string>
+    <string name="orders_col_status">Status</string>
+    <string name="orders_col_created_at">Created</string>
+    <string name="orders_status_pending">Pending</string>
+    <string name="orders_status_activating">Activating</string>
+    <string name="orders_status_cancelled">Cancelled</string>
+    <string name="orders_status_completed">Completed</string>
+    <string name="orders_status_discounted">Discounted</string>
+    <string name="orders_kind_new">New</string>
+    <string name="orders_kind_renew">Renew</string>
+    <string name="orders_kind_upgrade">Upgrade</string>
+    <string name="orders_kind_reset">Traffic reset</string>
+    <string name="orders_action_resume">Resume payment</string>
+    <string name="orders_action_cancel">Cancel</string>
+
+    <!-- Tickets -->
+    <string name="tickets_title">Tickets</string>
+    <string name="tickets_detail_title">Ticket detail</string>
+    <string name="tickets_back">Back</string>
+    <string name="tickets_refresh">Refresh</string>
+    <string name="tickets_empty">No tickets</string>
+    <string name="tickets_no_messages">No messages</string>
+    <string name="tickets_created_at">Created</string>
+    <string name="tickets_closed">Ticket closed</string>
+    <string name="tickets_closed_hint">This ticket is closed. Open a new one for further feedback.</string>
+    <string name="tickets_close">Close ticket</string>
+    <string name="tickets_col_subject">Subject</string>
+    <string name="tickets_col_level">Level</string>
+    <string name="tickets_col_status">Status</string>
+    <string name="tickets_col_updated_at">Updated</string>
+    <string name="tickets_status_open">Open</string>
+    <string name="tickets_status_closed">Closed</string>
+    <string name="tickets_level_low">Normal</string>
+    <string name="tickets_level_normal">Important</string>
+    <string name="tickets_level_high">Urgent</string>
+    <string name="tickets_reply_placeholder">Reply…</string>
+    <string name="tickets_reply_send">Send</string>
+    <string name="tickets_reply_empty">Reply cannot be empty</string>
+    <string name="tickets_reply_sent">Reply sent</string>
+    <string name="tickets_confirm_close">Close this ticket? You will not be able to reply afterwards.</string>
+    <string name="tickets_confirm_yes">Confirm</string>
+    <string name="tickets_confirm_no">Cancel</string>
+    <string name="tickets_composer_new">New ticket</string>
+    <string name="tickets_composer_subject">Subject</string>
+    <string name="tickets_composer_subject_placeholder">Briefly describe your issue</string>
+    <string name="tickets_composer_level">Level</string>
+    <string name="tickets_composer_message">Detail</string>
+    <string name="tickets_composer_message_placeholder">Describe the problem, repro steps, expected behavior…</string>
+    <string name="tickets_composer_cancel">Cancel</string>
+    <string name="tickets_composer_submit">Submit</string>
+    <string name="tickets_composer_fill_all">Please fill in subject and detail</string>
+    <string name="tickets_composer_created">Ticket created</string>
+
+    <!-- Connect -->
+    <string name="connect_title">Connection</string>
+    <string name="connect_mode_label">Mode</string>
+    <string name="connect_current_node">Current node</string>
+    <string name="connect_live_traffic">Live traffic</string>
+    <string name="connect_mode_reconnect">Mode switched, reconnecting…</string>
+    <string name="connect_retry">Retry</string>
+    <string name="connect_view_logs">View logs</string>
+    <string name="connect_mode_tun">TUN (recommended)</string>
+    <string name="connect_mode_system_proxy">System proxy</string>
+    <string name="connect_button_connected">On</string>
+    <string name="connect_button_disconnected">Off</string>
+    <string name="connect_button_nodes">Nodes</string>
+    <string name="connect_nodes_loading">Fetching nodes…</string>
+    <string name="connect_nodes_empty">No node groups available</string>
+    <string name="connect_nodes_needs_connect">Connect first to pick a node</string>
+    <string name="connect_nodes_test_all">Test latency</string>
+    <string name="connect_nodes_timeout">timeout</string>
+    <string name="connect_status_disconnected">Disconnected</string>
+    <string name="connect_status_connected">Connected</string>
+    <string name="connect_status_error">Error: %1$s</string>
+    <string name="connect_status_fetching">Fetching subscription…</string>
+    <string name="connect_status_elevating">Requesting system permission…</string>
+    <string name="connect_status_writing">Generating kernel config…</string>
+    <string name="connect_status_spawning">Starting kernel…</string>
+    <string name="connect_status_applying_route">Applying route…</string>
+    <string name="connect_log_title">Kernel logs (most recent)</string>
+    <string name="connect_log_refresh">Refresh</string>
+    <string name="connect_log_empty">No logs — kernel may not have started yet.</string>
+    <string name="connect_vpn_permission_denied">User denied VPN permission. TUN mode unavailable.</string>
+    <string name="connect_vpn_notification_title">Xboard connected</string>
+    <string name="connect_vpn_notification_text">Node: %1$s</string>
+    <string name="connect_vpn_notification_channel">VPN connection</string>
+
+    <!-- Kernel info -->
+    <string name="kernel_info_title">Kernel info</string>
+    <string name="kernel_info_bundled_hint">The kernel ships with the client; updates carry the latest version.</string>
+    <string name="kernel_info_unknown_version">Version unparseable</string>
+    <string name="kernel_info_empty">No kernel info</string>
+
+    <!-- Updater -->
+    <string name="updater_up_to_date">Already up to date</string>
+    <string name="updater_available_title">New version %1$s available</string>
+    <string name="updater_available_body">Update downloaded and verified. Install and restart now?</string>
+    <string name="updater_install_now">Install now</string>
+    <string name="updater_later">Later</string>
+
+    <!-- Errors -->
+    <string name="error_network">Network error — check your backend URL or connection</string>
+    <string name="error_unauthorized">Session expired — please sign in again</string>
+    <string name="error_session_expired">Session expired — please sign in again</string>
+    <string name="error_api">Server rejected request: %1$s</string>
+    <string name="error_other">%1$s</string>
+
+</resources>

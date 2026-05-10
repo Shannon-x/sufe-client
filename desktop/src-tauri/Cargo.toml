@@ -1,0 +1,62 @@
+[package]
+name = "xboard-desktop"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Xboard desktop client (Tauri shell)"
+
+[lib]
+# Tauri 2 mobile workflows expect a cdylib named after the package.
+# We keep `staticlib` for iOS/Android linkers and `rlib` for desktop.
+name = "xboard_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+xboard-core = { path = "../../core" }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+parking_lot = { workspace = true }
+secrecy = { workspace = true }
+anyhow = { workspace = true }
+futures = { workspace = true }
+once_cell = { workspace = true }
+async-trait = { workspace = true }
+
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-shell = "2"
+tauri-plugin-store = "2"
+tauri-plugin-notification = "2"
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-os = "2"
+tauri-plugin-process = "2"
+
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
+tauri-plugin-updater = "2"
+tauri-plugin-deep-link = "2"
+
+# Windows-only: SCM querying + UAC elevation for the xboard-svc install flow.
+# The `svc_install` module handles all of this; nothing else in the desktop
+# crate needs windows APIs.
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-service = "0.7"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[features]
+default = ["custom-protocol"]
+# By default Tauri uses a development server; release builds embed the assets.
+custom-protocol = ["tauri/custom-protocol"]

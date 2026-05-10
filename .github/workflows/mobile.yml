@@ -1,0 +1,193 @@
+name: Release Mobile
+
+# Tag-driven Android APK build. Companion to release.yml (desktop four
+# targets); a single `git push --tags` fans out to both workflows so the
+# v1.x.0 GitHub Release ends up with .dmg / .msi / .deb / .AppImage / .apk
+# assets all in one place.
+#
+# iOS is intentionally absent — distribution requires a $99/yr Apple
+# Developer Program account. Re-add the iOS job when ready by reverting
+# this commit and supplying APPLE_* secrets.
+#
+# Required secrets (Android signing — generate locally with
+# `bash ci/scripts/generate-release-keys.sh android`):
+#   ANDROID_KEYSTORE_BASE64    base64-encoded keystore (.jks)
+#   ANDROID_KEYSTORE_PASSWORD  keystore password
+#   ANDROID_KEY_ALIAS          signing key alias
+#   ANDROID_KEY_PASSWORD       signing key password
+#
+# If the keystore secret is empty, the job ships an unsigned-but-zipaligned
+# APK. Unsigned APKs install on developer devices via `adb install -t`,
+# but Google Play and the in-app updater (sha256-checked) require signing.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CI: 'true'
+  MIHOMO_VERSION: ${{ vars.MIHOMO_VERSION || 'v1.18.7' }}
+
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-22.04
+    env:
+      # Expose secret presence as a boolean string ('true' / 'false') so
+      # step-level `if:` can branch without referencing `secrets` directly
+      # (the GitHub Actions schema validator rejects `secrets.X` inside
+      # step `if`, even though it works at runtime).
+      HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (Android targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          shared-key: release-android
+
+      - name: Install cargo-ndk + uniffi-bindgen
+        run: cargo install cargo-ndk uniffi-bindgen-cli --locked || true
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Bootstrap gradle wrapper
+        run: bash android/bootstrap-wrapper.sh
+
+      - name: Cross-compile xboard-core (.so per ABI)
+        run: |
+          cd core
+          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
+            -o ../android/app/src/main/jniLibs build --release
+
+      - name: Fetch mihomo Android binaries
+        run: bash ci/scripts/install-mihomo-android.sh "${MIHOMO_VERSION}"
+
+      - name: assembleRelease
+        working-directory: android
+        run: ./gradlew --no-daemon assembleRelease
+
+      - name: Sign release APK
+        id: sign
+        if: ${{ env.HAS_KEYSTORE == 'true' }}
+        uses: r0adkll/sign-android-release@v1
+        with:
+          releaseDirectory: android/app/build/outputs/apk/release
+          signingKeyBase64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          keyStorePassword: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          alias: ${{ secrets.ANDROID_KEY_ALIAS }}
+          keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        env:
+          BUILD_TOOLS_VERSION: '34.0.0'
+
+      - name: Compute APK sha256
+        id: hash
+        run: |
+          set -euo pipefail
+          apk=$(ls android/app/build/outputs/apk/release/*-signed.apk \
+                  android/app/build/outputs/apk/release/*-unsigned.apk \
+                  android/app/build/outputs/apk/release/*.apk \
+                  2>/dev/null | head -n1)
+          if [ -z "${apk}" ]; then
+            echo "::error::no APK produced under android/app/build/outputs/apk/release"
+            exit 1
+          fi
+          tag="${GITHUB_REF_NAME}"
+          dest="xboard-${tag}-android.apk"
+          cp "${apk}" "${dest}"
+          sha=$(shasum -a 256 "${dest}" | awk '{print $1}')
+          echo "apk_path=${dest}" >> "${GITHUB_OUTPUT}"
+          echo "apk_sha256=${sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload APK to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.hash.outputs.apk_path }}
+          draft: true
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Write mobile manifest
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME#v}"
+          mkdir -p _manifest/mobile/android
+          cat > _manifest/mobile/android/latest.json <<EOF
+          {
+            "version": "${tag}",
+            "url": "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${{ steps.hash.outputs.apk_path }}",
+            "sha256": "${{ steps.hash.outputs.apk_sha256 }}",
+            "min_version": "0.1.0",
+            "force": false,
+            "notes": "Tag ${GITHUB_REF_NAME}"
+          }
+          EOF
+
+      - name: Upload manifest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-manifest-android
+          path: _manifest/mobile/android/latest.json
+
+  # ---------------- Publish gh-pages manifest ----------------
+  publish-mobile-manifest:
+    name: Publish mobile manifest
+    needs: [android]
+    runs-on: ubuntu-22.04
+    if: success()
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          fetch-depth: 1
+        continue-on-error: true
+
+      - name: Initialize gh-pages if missing
+        run: |
+          if [ ! -d .git ]; then
+            git init -b gh-pages
+            git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          fi
+
+      - name: Download manifest artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: mobile-manifest-android
+          path: mobile/android
+
+      - name: Commit & push gh-pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add mobile/android/latest.json
+          git diff --staged --quiet || git commit \
+            -m "publish mobile manifest for ${GITHUB_REF_NAME}"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            HEAD:gh-pages

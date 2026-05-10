@@ -1,0 +1,152 @@
+/* Common */
+"common.ok" = "OK";
+"common.close" = "Close";
+"common.notice" = "Notice";
+
+/* Tabs */
+"tabs.home" = "Home";
+"tabs.connect" = "Connect";
+"tabs.plans" = "Plans";
+"tabs.tickets" = "Tickets";
+
+/* Auth — login */
+"auth.login.title" = "Sign in to Xboard";
+"auth.login.subtitle" = "Enter your account to continue";
+"auth.login.submit" = "Sign In";
+"auth.email" = "Email";
+"auth.password" = "Password";
+"auth.password.new" = "New password";
+"auth.email_code" = "Verification code";
+"auth.email_code.send" = "Send";
+"auth.invite_optional" = "Invite code (optional)";
+"auth.password_updated" = "Password updated";
+
+/* Auth — register / forget */
+"auth.register.title" = "Create account";
+"auth.register.submit" = "Sign Up";
+"auth.register.cta" = "Create new account";
+"auth.forget" = "Forgot password";
+"auth.forget.title" = "Recover password";
+"auth.forget.submit" = "Reset password";
+
+/* Home */
+"home.subscribe.title" = "Current subscription";
+"home.subscribe.empty" = "No active subscription";
+"home.menu.orders" = "Orders";
+"home.menu.notices" = "Notices";
+"home.user.email" = "Email";
+"home.user.balance" = "Balance";
+"home.user.expires_at" = "Expires";
+"home.logout" = "Sign out";
+
+/* Connect */
+"connect.title" = "Connect";
+"connect.mode.tun" = "TUN";
+"connect.mode.system_proxy" = "System proxy";
+"connect.status.disconnected" = "Disconnected";
+"connect.status.fetching" = "Fetching subscription";
+"connect.status.writing" = "Writing config";
+"connect.status.spawning" = "Starting kernel";
+"connect.status.elevating" = "Requesting permission";
+"connect.status.applying_route" = "Applying routes";
+"connect.status.connected_tun" = "Connected (TUN)";
+"connect.status.connected_proxy" = "Connected (system proxy)";
+"connect.node.current" = "Current node";
+"connect.node.none" = "None";
+"connect.node.pick" = "Choose node";
+"connect.traffic.title" = "Live traffic";
+
+/* Nodes */
+"nodes.title" = "Nodes";
+"nodes.test_latency" = "Test latency";
+"nodes.testing" = "Testing";
+"nodes.timeout" = "Timeout";
+
+/* Plans */
+"plans.empty" = "No plans available";
+"plans.purchase" = "Purchase";
+"plans.tag.not_selling" = "Not selling";
+"plans.tag.no_renew" = "No renewal";
+"plans.transfer.gb" = "%lld GB traffic";
+"plans.period.month" = "Monthly";
+"plans.period.quarter" = "Quarterly";
+"plans.period.half_year" = "Half-year";
+"plans.period.year" = "Yearly";
+"plans.period.two_year" = "Two years";
+"plans.period.three_year" = "Three years";
+"plans.period.onetime" = "One-time";
+"plans.period.reset" = "Traffic reset";
+
+/* Purchase */
+"purchase.section.period" = "Period";
+"purchase.section.coupon" = "Coupon";
+"purchase.section.payment" = "Payment method";
+"purchase.coupon.placeholder" = "Enter coupon code";
+"purchase.submit" = "Place order";
+"purchase.gateway.title" = "Complete payment in your browser";
+"purchase.gateway.open" = "Open payment page";
+"purchase.gateway.no_redirect" = "No payment URL returned — please confirm manually";
+"purchase.gateway.refresh" = "Refresh status";
+"purchase.gateway.cancel" = "Cancel order";
+"purchase.paid.title" = "Payment received";
+"purchase.status.checking" = "Checking order status";
+"purchase.status.pending" = "Pending";
+"purchase.status.activating" = "Activating";
+"purchase.status.cancelled" = "Cancelled";
+"purchase.status.completed" = "Completed";
+"purchase.status.discounted" = "Discounted";
+"purchase.payment.fee_fixed" = "Fee %@";
+"purchase.payment.fee_percent" = "Fee %.2f%%";
+
+/* Orders */
+"orders.title" = "Orders";
+"orders.empty" = "No orders";
+"orders.action.cancel" = "Cancel order";
+"orders.col.kind" = "Type";
+"orders.col.period" = "Period";
+"orders.col.amount" = "Amount";
+"orders.col.created_at" = "Created";
+"orders.kind.new" = "New";
+"orders.kind.renew" = "Renew";
+"orders.kind.upgrade" = "Upgrade";
+"orders.kind.reset" = "Reset";
+"orders.status.pending" = "Pending";
+"orders.status.activating" = "Activating";
+"orders.status.cancelled" = "Cancelled";
+"orders.status.completed" = "Completed";
+"orders.status.discounted" = "Discounted";
+
+/* Tickets */
+"tickets.title" = "Tickets";
+"tickets.empty" = "No tickets";
+"tickets.detail.title" = "Ticket";
+"tickets.created_at" = "Created";
+"tickets.no_messages" = "No messages yet";
+"tickets.close" = "Close ticket";
+"tickets.closed" = "Ticket closed";
+"tickets.closed.hint" = "Open a new ticket if you have further questions";
+"tickets.confirm.close" = "Are you sure you want to close this ticket?";
+"tickets.confirm.yes" = "Confirm";
+"tickets.confirm.no" = "Cancel";
+"tickets.reply.placeholder" = "Type your reply";
+"tickets.reply.send" = "Send";
+"tickets.reply.empty" = "Reply cannot be empty";
+"tickets.level.low" = "Low";
+"tickets.level.normal" = "Normal";
+"tickets.level.high" = "High";
+"tickets.status.open" = "Open";
+"tickets.status.closed" = "Closed";
+"tickets.composer.new" = "New ticket";
+"tickets.composer.subject" = "Subject";
+"tickets.composer.subject.placeholder" = "Describe the issue briefly";
+"tickets.composer.level" = "Priority";
+"tickets.composer.message" = "Message";
+"tickets.composer.message.placeholder" = "Steps to reproduce, expected behavior, etc.";
+"tickets.composer.cancel" = "Cancel";
+"tickets.composer.submit" = "Submit";
+"tickets.composer.fill_all" = "Subject and message are required";
+
+/* Notices */
+"notices.title" = "Notices";
+"notices.empty" = "No notices";
+"notices.untitled" = "Untitled";

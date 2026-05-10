@@ -1,0 +1,9 @@
+# UniFFI binding generator config. Filled in once we wire up Phase 3 (Android).
+
+[bindings.kotlin]
+package_name = "com.xboard.client.core"
+cdylib_name = "xboard_core"
+generate_immutable_records = true
+
+[bindings.swift]
+cdylib_name = "xboard_core"

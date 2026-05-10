@@ -1,0 +1,43 @@
+[package]
+name = "xboard-svc"
+description = "Windows LocalSystem service that owns the mihomo subprocess on behalf of the unprivileged UI."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "xboard-svc"
+path = "src/main.rs"
+
+# Everything below is Windows-only. The crate compiles to an empty (lib-less)
+# binary on non-Windows hosts so the workspace `cargo check` on macOS / Linux
+# doesn't drag in windows-* dependencies. The Windows release.yml job is the
+# only place that actually builds this crate.
+[target.'cfg(target_os = "windows")'.dependencies]
+xboard-core = { path = "../core" }
+
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+parking_lot = { workspace = true }
+anyhow = { workspace = true }
+
+# Windows Service control + helpers (register, dispatch, install/uninstall).
+windows-service = "0.7"
+# Lower-level Win32 APIs: named-pipe DACLs, SID lookups on the connecting
+# client, security descriptor parsing.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Pipes",
+    "Win32_System_Threading",
+    "Win32_System_IO",
+] }

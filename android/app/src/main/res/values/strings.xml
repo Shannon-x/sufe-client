@@ -1,0 +1,283 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Default (zh-CN) string resources. Mirrors the key shape of
+    desktop/src/i18n/zh-CN.ts where practical, but uses Android-style
+    snake_case to keep things readable from XML. The English overrides
+    live under values-en/strings.xml.
+
+    Format strings:
+      - %1$s, %2$s for substitutions (e.g. {email} → %1$s)
+      - %1$d for integers
+      - For literal '%' use '%%'
+-->
+<resources>
+
+    <!-- App-wide -->
+    <string name="app_name">Xboard</string>
+    <string name="app_tagline">基于 mihomo 的高性能多平台代理客户端</string>
+
+    <!-- Login -->
+    <string name="login_heading">登录到 Xboard</string>
+    <string name="login_email">邮箱</string>
+    <string name="login_password">密码</string>
+    <string name="login_submit">登 录</string>
+    <string name="login_submitting">登录中…</string>
+    <string name="login_fill_all">请填写所有字段</string>
+    <string name="login_success">登录成功，欢迎 %1$s</string>
+    <string name="login_captcha_required">请先完成人机验证</string>
+    <string name="login_to_register">注册账号</string>
+    <string name="login_to_forget">忘记密码？</string>
+
+    <!-- Register -->
+    <string name="register_heading">注册新账号</string>
+    <string name="register_tagline">填写邮箱和密码即可开通</string>
+    <string name="register_email">邮箱</string>
+    <string name="register_code">邮箱验证码</string>
+    <string name="register_code_send">发送验证码</string>
+    <string name="register_code_resend">%1$ds 后重发</string>
+    <string name="register_code_sent">验证码已发送，请查收邮箱</string>
+    <string name="register_password">密码（不少于 8 位）</string>
+    <string name="register_password_confirm">确认密码</string>
+    <string name="register_invite">邀请码</string>
+    <string name="register_invite_required">本站需要邀请码才能注册</string>
+    <string name="register_fill_all">请填写所有必填字段</string>
+    <string name="register_invalid_email">邮箱格式不正确</string>
+    <string name="register_suffix_hint">本站仅允许使用以下邮箱后缀:%1$s</string>
+    <string name="register_suffix_mismatch">邮箱必须以 %1$s 结尾</string>
+    <string name="register_password_too_short">密码至少 8 位</string>
+    <string name="register_password_mismatch">两次输入的密码不一致</string>
+    <string name="register_tos">我已阅读并同意服务条款</string>
+    <string name="register_must_agree_tos">请先勾选同意服务条款</string>
+    <string name="register_submit">注 册</string>
+    <string name="register_submitting">注册中…</string>
+    <string name="register_success">注册成功，欢迎 %1$s</string>
+    <string name="register_back_to_login">返回登录</string>
+
+    <!-- Forget password -->
+    <string name="forget_heading">找回密码</string>
+    <string name="forget_tagline">输入邮箱与验证码即可重置</string>
+    <string name="forget_email">邮箱</string>
+    <string name="forget_code">邮箱验证码</string>
+    <string name="forget_password">新密码（不少于 8 位）</string>
+    <string name="forget_password_confirm">确认新密码</string>
+    <string name="forget_submit">重置密码</string>
+    <string name="forget_submitting">提交中…</string>
+    <string name="forget_fill_all">请填写所有必填字段</string>
+    <string name="forget_success">密码已重置，请使用新密码登录</string>
+
+    <!-- Home -->
+    <string name="home_welcome">欢迎，%1$s</string>
+    <string name="home_plan">套餐</string>
+    <string name="home_balance">余额</string>
+    <string name="home_commission">佣金</string>
+    <string name="home_expiry">到期时间</string>
+    <string name="home_expiry_never">无限期</string>
+    <string name="home_traffic">流量</string>
+    <string name="home_used">已使用</string>
+    <string name="home_total">总量</string>
+    <string name="home_refresh">刷新</string>
+    <string name="home_logout">退出登录</string>
+    <string name="home_subscribe">订阅链接</string>
+    <string name="home_copy">复制</string>
+    <string name="home_copied">已复制到剪贴板</string>
+    <string name="home_not_subscribed">尚未订阅任何套餐</string>
+    <string name="home_notices">公告</string>
+    <string name="home_menu_plans">套餐目录</string>
+    <string name="home_menu_orders">订单记录</string>
+    <string name="home_menu_tickets">工单中心</string>
+    <string name="home_menu_notices">运营公告</string>
+    <string name="home_menu_kernel_info">内核信息</string>
+    <string name="home_menu_check_update">检查更新</string>
+    <string name="home_cue_none_title">你还没有订阅任何套餐</string>
+    <string name="home_cue_none_body">前往套餐目录开通,即可使用代理服务。</string>
+    <string name="home_cue_expired_title">订阅已过期</string>
+    <string name="home_cue_expired_body">订阅已过期,代理服务暂停,请尽快续费恢复。</string>
+    <string name="home_cue_expiring_title">订阅即将到期</string>
+    <string name="home_cue_expiring_body">你的订阅将于 %1$s 到期,建议提前续费避免中断。</string>
+    <string name="home_cue_traffic_low_title">本期流量即将耗尽</string>
+    <string name="home_cue_traffic_low_body">已使用超过 95%% 流量,可考虑升级到更高套餐或等待下个周期重置。</string>
+    <string name="home_cue_browse">浏览套餐</string>
+    <string name="home_cue_renew">立即续费</string>
+    <string name="home_cue_upgrade">升级套餐</string>
+
+    <!-- Notices -->
+    <string name="notices_title">运营公告</string>
+    <string name="notices_back">返回</string>
+    <string name="notices_refresh">刷新</string>
+    <string name="notices_empty">暂无公告</string>
+    <string name="notices_untitled">（无标题）</string>
+
+    <!-- Plans -->
+    <string name="plans_title">套餐目录</string>
+    <string name="plans_back">返回</string>
+    <string name="plans_refresh">刷新</string>
+    <string name="plans_empty">暂无可购买的套餐</string>
+    <string name="plans_transfer_enable">包含流量:%1$s GB</string>
+    <string name="plans_no_prices">该套餐暂未配置任何售卖周期</string>
+    <string name="plans_reset_price">流量重置</string>
+    <string name="plans_buy">购买</string>
+    <string name="plans_period_month">月付</string>
+    <string name="plans_period_quarter">季付</string>
+    <string name="plans_period_half_year">半年付</string>
+    <string name="plans_period_year">年付</string>
+    <string name="plans_period_two_year">两年付</string>
+    <string name="plans_period_three_year">三年付</string>
+    <string name="plans_period_onetime">一次性</string>
+    <string name="plans_tag_current">当前套餐</string>
+    <string name="plans_tag_not_selling">已下架</string>
+    <string name="plans_tag_no_renew">不可续费</string>
+
+    <!-- Purchase -->
+    <string name="purchase_title">确认购买</string>
+    <string name="purchase_plan">套餐</string>
+    <string name="purchase_period">周期</string>
+    <string name="purchase_price">价格</string>
+    <string name="purchase_coupon_label">优惠码</string>
+    <string name="purchase_coupon_placeholder">输入优惠码（可选）</string>
+    <string name="purchase_payment_method">支付方式</string>
+    <string name="purchase_payment_method_loading">正在加载支付方式…</string>
+    <string name="purchase_payment_method_empty">未配置可用支付方式,请联系站点管理员</string>
+    <string name="purchase_cancel">取消</string>
+    <string name="purchase_submit">立即支付</string>
+    <string name="purchase_submitting">创建订单中…</string>
+    <string name="purchase_fee_fixed">+ 手续费 ¥%1$s</string>
+    <string name="purchase_fee_percent">+ %1$s%%</string>
+    <string name="purchase_pending_title">等待支付</string>
+    <string name="purchase_redirect_opened">已在浏览器打开支付页面,完成后请回到此处刷新订单状态。</string>
+    <string name="purchase_qr_show">请使用支付应用扫描以下二维码或链接完成支付:</string>
+    <string name="purchase_qr_copy">复制链接</string>
+    <string name="purchase_qr_copied">链接已复制到剪贴板</string>
+    <string name="purchase_balance_paid">余额已直接扣款,订单已完成。</string>
+    <string name="purchase_status_refresh">刷新订单状态</string>
+    <string name="purchase_status_checking">查询中…</string>
+    <string name="purchase_status_pending">订单仍在等待支付</string>
+    <string name="purchase_status_activating">已收到付款,正在开通…</string>
+    <string name="purchase_status_completed">订单已完成,套餐已到账。</string>
+    <string name="purchase_status_cancelled">订单已取消</string>
+    <string name="purchase_status_unknown">订单状态:%1$d</string>
+    <string name="purchase_close">关闭</string>
+    <string name="purchase_cancel_order">取消订单</string>
+    <string name="purchase_cancel_confirm">确定要取消该订单吗?</string>
+    <string name="purchase_cancel_yes">确定</string>
+    <string name="purchase_cancel_no">保留</string>
+    <string name="purchase_cancelled">订单已取消</string>
+    <string name="purchase_error_pick_payment">请先选择支付方式</string>
+    <string name="purchase_error_no_trade_no">未获取到订单号,请重试</string>
+    <string name="purchase_error_open_url">无法在浏览器打开支付页面:%1$s</string>
+
+    <!-- Orders -->
+    <string name="orders_title">订单记录</string>
+    <string name="orders_back">返回</string>
+    <string name="orders_refresh">刷新</string>
+    <string name="orders_empty">暂无订单</string>
+    <string name="orders_col_trade_no">订单号</string>
+    <string name="orders_col_kind">类型</string>
+    <string name="orders_col_period">周期</string>
+    <string name="orders_col_amount">金额</string>
+    <string name="orders_col_status">状态</string>
+    <string name="orders_col_created_at">下单时间</string>
+    <string name="orders_status_pending">待支付</string>
+    <string name="orders_status_activating">开通中</string>
+    <string name="orders_status_cancelled">已取消</string>
+    <string name="orders_status_completed">已完成</string>
+    <string name="orders_status_discounted">已抵扣</string>
+    <string name="orders_kind_new">新购</string>
+    <string name="orders_kind_renew">续费</string>
+    <string name="orders_kind_upgrade">升级</string>
+    <string name="orders_kind_reset">流量重置</string>
+    <string name="orders_action_resume">继续支付</string>
+    <string name="orders_action_cancel">取消</string>
+
+    <!-- Tickets -->
+    <string name="tickets_title">工单中心</string>
+    <string name="tickets_detail_title">工单详情</string>
+    <string name="tickets_back">返回</string>
+    <string name="tickets_refresh">刷新</string>
+    <string name="tickets_empty">暂无工单</string>
+    <string name="tickets_no_messages">暂无消息</string>
+    <string name="tickets_created_at">创建时间</string>
+    <string name="tickets_closed">工单已关闭</string>
+    <string name="tickets_closed_hint">该工单已关闭,如需继续反馈请创建新工单。</string>
+    <string name="tickets_close">关闭工单</string>
+    <string name="tickets_col_subject">主题</string>
+    <string name="tickets_col_level">等级</string>
+    <string name="tickets_col_status">状态</string>
+    <string name="tickets_col_updated_at">最近更新</string>
+    <string name="tickets_status_open">进行中</string>
+    <string name="tickets_status_closed">已关闭</string>
+    <string name="tickets_level_low">普通</string>
+    <string name="tickets_level_normal">重要</string>
+    <string name="tickets_level_high">紧急</string>
+    <string name="tickets_reply_placeholder">输入回复内容…</string>
+    <string name="tickets_reply_send">发送回复</string>
+    <string name="tickets_reply_empty">回复内容不能为空</string>
+    <string name="tickets_reply_sent">回复已发送</string>
+    <string name="tickets_confirm_close">确定要关闭这个工单吗?关闭后无法继续回复。</string>
+    <string name="tickets_confirm_yes">确定</string>
+    <string name="tickets_confirm_no">取消</string>
+    <string name="tickets_composer_new">新建工单</string>
+    <string name="tickets_composer_subject">主题</string>
+    <string name="tickets_composer_subject_placeholder">简要描述你的问题</string>
+    <string name="tickets_composer_level">等级</string>
+    <string name="tickets_composer_message">详细说明</string>
+    <string name="tickets_composer_message_placeholder">尽量描述清楚问题、复现步骤、期望结果…</string>
+    <string name="tickets_composer_cancel">取消</string>
+    <string name="tickets_composer_submit">提交</string>
+    <string name="tickets_composer_fill_all">请填写主题与详细说明</string>
+    <string name="tickets_composer_created">工单已创建</string>
+
+    <!-- Connect (TUN tunnel) -->
+    <string name="connect_title">连接</string>
+    <string name="connect_mode_label">模式</string>
+    <string name="connect_current_node">当前节点</string>
+    <string name="connect_live_traffic">实时流量</string>
+    <string name="connect_mode_reconnect">模式已切换,正在重新建立连接…</string>
+    <string name="connect_retry">重试</string>
+    <string name="connect_view_logs">查看日志</string>
+    <string name="connect_mode_tun">TUN（推荐）</string>
+    <string name="connect_mode_system_proxy">系统代理</string>
+    <string name="connect_button_connected">已开</string>
+    <string name="connect_button_disconnected">未开</string>
+    <string name="connect_button_nodes">节点列表</string>
+    <string name="connect_nodes_loading">正在拉取节点列表…</string>
+    <string name="connect_nodes_empty">暂无可选节点组</string>
+    <string name="connect_nodes_needs_connect">请先连接,连接成功后即可选择节点</string>
+    <string name="connect_nodes_test_all">测延迟</string>
+    <string name="connect_nodes_timeout">超时</string>
+    <string name="connect_status_disconnected">未连接</string>
+    <string name="connect_status_connected">已连接</string>
+    <string name="connect_status_error">连接出错:%1$s</string>
+    <string name="connect_status_fetching">拉取订阅中…</string>
+    <string name="connect_status_elevating">请求系统授权…</string>
+    <string name="connect_status_writing">生成内核配置…</string>
+    <string name="connect_status_spawning">启动内核…</string>
+    <string name="connect_status_applying_route">应用路由…</string>
+    <string name="connect_log_title">内核日志（最近输出）</string>
+    <string name="connect_log_refresh">刷新</string>
+    <string name="connect_log_empty">暂无日志,可能内核尚未启动过。</string>
+    <string name="connect_vpn_permission_denied">用户拒绝了 VPN 授权,无法开启 TUN 模式</string>
+    <string name="connect_vpn_notification_title">Xboard 已连接</string>
+    <string name="connect_vpn_notification_text">节点:%1$s</string>
+    <string name="connect_vpn_notification_channel">VPN 连接状态</string>
+
+    <!-- Kernel info -->
+    <string name="kernel_info_title">内核信息</string>
+    <string name="kernel_info_bundled_hint">内核随客户端一同发布,应用更新即会带上最新内核版本。</string>
+    <string name="kernel_info_unknown_version">版本解析失败</string>
+    <string name="kernel_info_empty">暂无内核信息</string>
+
+    <!-- Updater -->
+    <string name="updater_up_to_date">已经是最新版本</string>
+    <string name="updater_available_title">发现新版本 %1$s</string>
+    <string name="updater_available_body">更新已下载并校验完毕,是否立即安装并重启?</string>
+    <string name="updater_install_now">立即安装</string>
+    <string name="updater_later">稍后</string>
+
+    <!-- Errors -->
+    <string name="error_network">网络异常,请检查后端地址或网络连接</string>
+    <string name="error_unauthorized">登录已失效,请重新登录</string>
+    <string name="error_session_expired">登录已过期,请重新登录</string>
+    <string name="error_api">服务端拒绝请求:%1$s</string>
+    <string name="error_other">%1$s</string>
+
+</resources>

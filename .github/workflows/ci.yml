@@ -1,0 +1,153 @@
+name: CI
+
+# PR / push checks. Each job is independent — a Rust regression doesn't
+# block the desktop frontend lint and vice versa. Slow steps (Android
+# Gradle wrapper, iOS xcframework build) are split out so contributors
+# touching just the Rust core don't pay for them on every PR.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---------- Rust core / svc / helper ----------
+  rust:
+    name: Rust (core + svc + helper)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          shared-key: ci-rust
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        run: cargo clippy -p xboard-core --all-features -- -D warnings
+
+      - name: cargo test
+        run: cargo test -p xboard-core --all-features
+
+  # ---------- Tauri desktop ----------
+  desktop:
+    name: Desktop (Tauri / Vue)
+    runs-on: ubuntu-22.04
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux desktop deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          shared-key: ci-desktop
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install desktop frontend deps
+        working-directory: desktop
+        run: npm ci --no-audit --fund=false
+
+      - name: vue-tsc + clippy
+        run: |
+          cargo clippy -p xboard-desktop --all-targets -- -D warnings
+          (cd desktop && ./node_modules/.bin/vue-tsc --noEmit)
+
+  # ---------- Android (lint + detekt + assembleDebug smoke) ----------
+  android:
+    name: Android (Gradle)
+    runs-on: ubuntu-22.04
+    needs: rust
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (Android targets)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          shared-key: ci-android
+
+      - name: Install cargo-ndk + uniffi-bindgen
+        run: cargo install cargo-ndk uniffi-bindgen-cli --locked || true
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Bootstrap gradle wrapper
+        run: bash android/bootstrap-wrapper.sh
+
+      # `core-android` produces libxboard_core.so; mihomo binaries are
+      # also dropped under jniLibs (renamed libmihomo.so per the
+      # Android 12+ exec workaround). The mihomo step uses a public
+      # release tag; bump via repo variable when needed.
+      - name: Cross-compile xboard-core for Android
+        run: |
+          cd core
+          cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
+            -o ../android/app/src/main/jniLibs build --release
+
+      - name: Fetch mihomo Android binaries
+        env:
+          MIHOMO_VERSION: ${{ vars.MIHOMO_VERSION || 'v1.18.7' }}
+        run: bash ci/scripts/install-mihomo-android.sh "${MIHOMO_VERSION}"
+
+      - name: gradle lint + detekt + assembleDebug
+        working-directory: android
+        run: |
+          ./gradlew --no-daemon \
+            lint \
+            assembleDebug
+
+  # iOS CI is intentionally absent — distribution requires an Apple
+  # Developer Program account ($99/yr). When ready, restore the `ios:`
+  # job from git history and re-enable the iOS scaffolding.

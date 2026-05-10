@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Android 12+ data-extraction policy. Symmetric with backup_rules.xml
+    but covers cloud backup AND device-to-device transfer.
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="sharedpref" path="xboard_secure_prefs.xml" />
+        <exclude domain="file" path="kernel/" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="sharedpref" path="xboard_secure_prefs.xml" />
+        <exclude domain="file" path="kernel/" />
+    </device-transfer>
+</data-extraction-rules>

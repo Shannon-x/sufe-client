@@ -1,0 +1,88 @@
+[package]
+name = "xboard-core"
+description = "Shared business logic for xboard-client (API, profile, kernel, updater)."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lib]
+name = "xboard_core"
+# `lib` (rlib) keeps the crate consumable by Tauri / svc / helper crates
+# inside the workspace. `cdylib` is what cargo-ndk packages as
+# `libxboard_core.so` for Android jniLibs and what xcodebuild expects for
+# the dynamic-framework path on iOS simulator. `staticlib` is what the
+# iOS device build links into the SwiftUI app bundle. Adding all three
+# unconditionally costs an extra archiving step on desktop dev but
+# matches the per-platform linker expectations we'll need from M3 on.
+crate-type = ["lib", "cdylib", "staticlib"]
+
+# Stand-in for the `uniffi-bindgen-cli` crate (which isn't published on
+# crates.io for 0.28). Lets us run `cargo run -p xboard-core --bin
+# uniffi-bindgen -- generate src/ffi.udl --language kotlin ...` from CI
+# / dev shells without an extra `cargo install` step.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi_bindgen.rs"
+
+[build-dependencies]
+# Generates the C ABI Rust scaffolding that turns `ffi.udl` interface
+# definitions into `extern "C" fn` exports the Kotlin / Swift bindings
+# can dlsym. Build script lives in `build.rs`.
+uniffi = { version = "0.28", features = ["build"] }
+
+[dependencies]
+tokio = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+# Runtime side of UniFFI: async support is gated behind the `tokio`
+# feature so `[Async]` UDL methods can return Rust `async fn`. Pin the
+# minor version — UniFFI's wire format is stable within a minor only.
+# `cli` enables `uniffi_bindgen_main()` for the in-tree bindgen binary.
+uniffi = { version = "0.28", features = ["tokio", "cli"] }
+
+reqwest = { workspace = true }
+tokio-util = { workspace = true }
+tokio-stream = { workspace = true }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
+
+ring = { workspace = true }
+ed25519-dalek = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+
+chrono = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
+
+secrecy = { workspace = true }
+once_cell = { workspace = true }
+parking_lot = { workspace = true }
+bytes = { workspace = true }
+anyhow = { workspace = true }
+
+[features]
+default = []
+# `mobile` is set by Android cross-compile to opt into single-thread runtime
+# and skip desktop-only crates (e.g. keyring on Linux).
+mobile = []
+
+# Desktop-only: system-proxy fallback when TUN elevation isn't available,
+# plus OS keychain for the Sanctum bearer (auth_data). Mobile builds skip
+# `keyring`; Android will land its own JNI-based SecureStore impl.
+[target.'cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))'.dependencies]
+sysproxy = "0.3"
+keyring = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }

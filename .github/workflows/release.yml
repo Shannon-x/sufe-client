@@ -1,0 +1,194 @@
+name: Release Desktop
+
+# Triggered by pushing a tag like `v0.1.0`. Each runner produces one
+# bundle set; tauri-action collects them into a single GitHub Release
+# (created as a draft so the maintainer can review notes before
+# publishing). Once published, `publish-desktop-manifest` rebuilds a
+# unified `latest.json` from the release assets and pushes it to
+# `gh-pages`, which the Tauri updater plugin polls.
+#
+# This is the all-free flavour:
+#   * No Apple notarization (would need $99/yr Apple Developer Program).
+#   * No Windows Authenticode signing (would need a $200+/yr code-signing
+#     cert). First-launch SmartScreen warning is the trade-off.
+#   * Updater manifest signing IS still done — the ed25519 key is free
+#     and the Tauri updater protocol requires it. Generate locally:
+#         bash ci/scripts/generate-release-keys.sh tauri
+#     then paste the private key into the TAURI_SIGNING_PRIVATE_KEY
+#     secret and the public key into tauri.conf.json.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      mihomo_version:
+        description: 'mihomo kernel release tag (e.g. v1.18.7)'
+        required: false
+        default: 'v1.18.7'
+
+permissions:
+  contents: write
+
+env:
+  CI: 'true'
+  MIHOMO_VERSION: ${{ github.event.inputs.mihomo_version || vars.MIHOMO_VERSION || 'v1.18.7' }}
+
+jobs:
+  build:
+    name: Build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-13
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            pkg-config
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          key: ${{ matrix.target }}
+
+      - name: Install desktop frontend deps
+        working-directory: desktop
+        run: npm ci --no-audit --fund=false
+
+      - name: Fetch mihomo sidecar
+        shell: bash
+        run: bash ci/scripts/install-mihomo-sidecar.sh "${MIHOMO_VERSION}"
+
+      - name: Build helper sidecar (release)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: bash ci/scripts/install-helper-sidecar.sh release
+
+      - name: Build xboard-svc + fetch wintun.dll
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          CARGO_BUILD_TARGET: ${{ matrix.target }}
+          WINTUN_VERSION: ${{ vars.WINTUN_VERSION || '0.14.1' }}
+        run: bash ci/scripts/install-svc-sidecar.sh release
+
+      # tauri-action runs `tauri build`, signs the updater manifest with
+      # the ed25519 key, and uploads bundles + .sig sidecars to a draft
+      # GitHub Release. NO codesigning / notarization on this free flavour
+      # — TAURI_SIGNING_PRIVATE_KEY is the only required secret.
+      - name: Build & upload bundles
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          projectPath: desktop
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Xboard ${{ github.ref_name }}'
+          releaseBody: |
+            ## Xboard ${{ github.ref_name }}
+
+            Download the asset matching your platform below.
+
+            > 首次安装提示：macOS 用户右键点击 .dmg → 打开（绕过 Gatekeeper）；
+            > Windows 用户在 SmartScreen 提示界面点 "更多信息" → "仍要运行"。
+            > 这两步只在首次安装时出现，自动更新走 Tauri 内置 ed25519 校验。
+
+            <!-- Update notes here before publishing the draft. -->
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
+
+  # ---------------- Publish gh-pages manifest ----------------
+  publish-desktop-manifest:
+    name: Publish desktop manifest
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build unified latest.json from release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p _publish/desktop
+          bash ci/scripts/build-desktop-manifest.sh \
+            "${GITHUB_REF_NAME}" \
+            "_publish/desktop/latest.json"
+
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: gh-pages
+        continue-on-error: true
+
+      - name: Initialize gh-pages if missing
+        run: |
+          if [ ! -d gh-pages/.git ]; then
+            rm -rf gh-pages
+            mkdir gh-pages
+            cd gh-pages
+            git init -b gh-pages
+            git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          fi
+
+      - name: Stage manifest + landing page
+        run: |
+          mkdir -p gh-pages/desktop
+          cp _publish/desktop/latest.json gh-pages/desktop/latest.json
+          if [ -d update-server/dist ]; then
+            cp -R update-server/dist/. gh-pages/
+          fi
+
+      - name: Commit & push gh-pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: gh-pages
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --staged --quiet || git commit \
+            -m "publish desktop manifest for ${GITHUB_REF_NAME}"
+          git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            HEAD:gh-pages

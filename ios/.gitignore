@@ -1,0 +1,20 @@
+# XcodeGen-generated; rebuild via `just ios-bootstrap`.
+*.xcodeproj/
+*.xcworkspace/
+
+# Build outputs.
+build/
+DerivedData/
+
+# Bundled binaries fetched at bootstrap (Libbox.xcframework from sing-box-for-apple,
+# XboardCore.xcframework built by `just core-ios`).
+Vendor/*.xcframework
+
+# UniFFI-generated Swift bindings (`just ios-bindings` writes them).
+Shared/Generated/*.swift
+Shared/Generated/*.h
+Shared/Generated/*.modulemap
+
+# Local secrets / signing.
+*.entitlements.local
+ExportOptions.local.plist

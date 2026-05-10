@@ -1,0 +1,552 @@
+// UniFFI declaration for the Android Kotlin / iOS Swift bindings.
+//
+// The Rust side of every interface lives in `core/src/ffi/` and is hooked
+// up via `uniffi::include_scaffolding!("ffi")` in `lib.rs`. The Kotlin /
+// Swift / Python bindings are produced by `uniffi-bindgen-cli generate
+// src/ffi.udl --language <lang>` (see `justfile::core-android` and the
+// per-platform mobile build scripts).
+//
+// Surface mirrors what the desktop Tauri commands expose to the Vue side
+// (see `desktop/src/api.ts`) so the Compose / SwiftUI layers can be 1:1
+// with the Vue page logic — same arg names, same return shapes — and we
+// never grow a parallel mobile-only data layer.
+
+namespace xboard_core {
+    /// Crate version. Smoke test for the cargo-ndk + uniffi pipeline; also
+    /// useful for "About" dialogs on every shell.
+    string version();
+
+    /// iOS-only: translate a mihomo subscription YAML into a sing-box JSON
+    /// config the PacketTunnelProvider can hand to `LibboxBoxService.start`.
+    /// The Xboard backend doesn't ship a sing-box subscription flag, so the
+    /// SwiftUI host calls this *after* `Client::current_subscribe` to convert
+    /// the cached mihomo YAML — keeping the network shape identical to
+    /// every other platform.
+    [Throws=FfiError]
+    string render_singbox_config(
+        string subscribe_yaml,
+        string external_controller,
+        string secret,
+        u16 mixed_port,
+        TunnelMode mode
+    );
+};
+
+// ---------------------------------------------------------------------- //
+// Errors                                                                  //
+// ---------------------------------------------------------------------- //
+
+/// Flattened mirror of `crate::error::XboardError`. UniFFI requires a
+/// closed enum at the FFI boundary — variants that nest opaque types
+/// (anyhow::Error, reqwest::Error, etc.) are collapsed into `Other` here
+/// with their Display string preserved.
+[Error]
+enum FfiError {
+    "Network",
+    "Io",
+    "Json",
+    "Yaml",
+    "Url",
+    "ApiFailure",
+    "Unauthorized",
+    "KernelNotRunning",
+    "KernelStartTimeout",
+    "KernelBinaryMissing",
+    "Kernel",
+    "InvalidSignature",
+    "ChecksumMismatch",
+    "NotImplemented",
+    "Config",
+    "Other",
+};
+
+/// Error surface the host-side `SecureStore` callback may raise. The Rust
+/// trait wraps this back into `XboardError::Config(...)` so the rest of
+/// the codebase keeps a single error type. Declared as `[Error] interface`
+/// (rich-mode) rather than flat `enum` because callback errors need a
+/// `try_read` path on the Rust side, which `flat_error` only generates
+/// for unit variants — we want to preserve the human-readable backend
+/// message across the FFI.
+[Error]
+interface StorageError {
+    Backend(string message);
+};
+
+/// Errors a `TunDelegate` callback may raise during `establish_tun`. The
+/// kernel manager translates these to `XboardError::Kernel` and the
+/// connect flow downgrades to SystemProxy where the platform allows.
+/// Same rich-mode rationale as `StorageError` above.
+[Error]
+interface TunnelError {
+    Denied(string message);
+    Backend(string message);
+};
+
+// ---------------------------------------------------------------------- //
+// Persistence callback                                                    //
+// ---------------------------------------------------------------------- //
+
+/// Host-supplied keychain bridge. Desktop wraps `KeyringStore`; Android
+/// wraps `EncryptedSharedPreferences` + Android Keystore; iOS wraps the
+/// Security.framework Keychain. All three implementations are just
+/// thin adapters — the persistence-key strings are owned by `Client`.
+callback interface SecureStore {
+    [Throws=StorageError]
+    void put(string key, string value);
+
+    /// `None` means "no entry under this key". Implementations MUST NOT
+    /// throw `Backend` for a missing key — the Rust side relies on the
+    /// `None` sentinel for cold-start hydration.
+    [Throws=StorageError]
+    string? get(string key);
+
+    /// Idempotent — deleting an already-absent key is a successful no-op.
+    [Throws=StorageError]
+    void delete(string key);
+};
+
+// ---------------------------------------------------------------------- //
+// Connection state stream                                                 //
+// ---------------------------------------------------------------------- //
+
+/// Phase inside `Connecting`. Stable strings — Vue / Compose / SwiftUI
+/// all switch on the discriminant directly to render the spinner caption.
+enum ConnectStage {
+    "Fetching",
+    "Writing",
+    "Elevating",
+    "Spawning",
+    "ApplyingRoute",
+    "FallbackProxy",
+};
+
+/// User-preferred (and final) tunnel transport. `Tun` may downgrade to
+/// `SystemProxy` mid-`connect` if the launcher reports it can't get
+/// privileged; the downgrade is reflected in the `mode` field of every
+/// `ConnectionState` variant.
+enum TunnelMode {
+    "Tun",
+    "SystemProxy",
+};
+
+/// Snapshot of the kernel manager's state machine. Each variant carries
+/// the *current* mode (so the UI can render "Connecting (System Proxy)"
+/// after a downgrade).
+[Enum]
+interface ConnectionState {
+    Disconnected();
+    Connecting(ConnectStage stage, TunnelMode mode);
+    Connected(string since, TunnelMode mode, u16 mixed_port);
+    Failed(string message, TunnelMode mode);
+};
+
+/// Push-only callback for state changes. Rust spawns a tokio task that
+/// fans out the broadcast channel to `on_state(...)`; the host lifts
+/// each emit onto a Kotlin `MutableStateFlow` / Swift `@Observable`.
+callback interface StateObserver {
+    /// MUST NOT throw — the Rust task ignores the result. Implementations
+    /// should be quick (just hand off to the UI layer); blocking here
+    /// will back-pressure the broadcast channel and lagging frames may
+    /// be dropped.
+    void on_state(ConnectionState state);
+};
+
+// ---------------------------------------------------------------------- //
+// Mobile TUN delegate (placeholder for M4/M5)                             //
+// ---------------------------------------------------------------------- //
+
+/// Config the Rust side hands to the host's TUN factory. The fd returned
+/// from `establish_tun` is then passed to mihomo / sing-box via their
+/// `tun.device.fd` config knob.
+dictionary TunConfig {
+    /// Tunnel name surfaced in iOS Settings → VPN; cosmetic on Android.
+    string session;
+    /// IPv4 address + prefix the OS assigns to the TUN, e.g. ("172.19.0.1", 30).
+    string ipv4_addr;
+    u8 ipv4_prefix;
+    /// Routes installed on the TUN. Default = `["0.0.0.0/0"]` (full tunnel).
+    sequence<string> routes;
+    sequence<string> dns;
+    u32 mtu;
+};
+
+/// Mobile-only: VpnService (Android) / NEPacketTunnelProvider (iOS) hook.
+/// Desktop launchers ignore this — they run a real OS-level TUN via the
+/// privileged helper / service.
+callback interface TunDelegate {
+    /// Hand back a numeric file descriptor — the OS retains lifetime
+    /// ownership; Rust just reads/writes through it.
+    [Throws=TunnelError]
+    i32 establish_tun(TunConfig config);
+
+    /// Tear down. Idempotent.
+    void close_tun();
+};
+
+// ---------------------------------------------------------------------- //
+// Auth + site config                                                      //
+// ---------------------------------------------------------------------- //
+
+dictionary LoginSummary {
+    string email;
+    boolean is_admin;
+    /// Subscribe token (`?token=...`), NOT the Sanctum bearer.
+    string subscribe_token;
+};
+
+dictionary LoginArgs {
+    string email;
+    string password;
+    string? recaptcha;
+    string? turnstile;
+};
+
+dictionary RegisterArgs {
+    string email;
+    string password;
+    string email_code;
+    string? invite_code;
+    string? recaptcha;
+    string? turnstile;
+};
+
+dictionary ForgetPasswordArgs {
+    string email;
+    string password;
+    string email_code;
+    string? recaptcha;
+    string? turnstile;
+};
+
+dictionary SiteConfig {
+    string tos_url;
+    boolean is_email_verify;
+    boolean is_invite_force;
+    sequence<string> email_whitelist_suffix;
+    boolean is_captcha;
+    string captcha_type;
+    string recaptcha_site_key;
+    string recaptcha_v3_site_key;
+    f32 recaptcha_v3_score_threshold;
+    string turnstile_site_key;
+    boolean is_recaptcha;
+    string app_description;
+    string app_url;
+    string logo;
+};
+
+// ---------------------------------------------------------------------- //
+// User                                                                    //
+// ---------------------------------------------------------------------- //
+
+dictionary UserInfo {
+    string email;
+    /// Cents.
+    i64 balance;
+    /// Cents.
+    i64 commission_balance;
+    i64? plan_id;
+    /// Unix timestamp (seconds).
+    i64? expired_at;
+    string? uuid;
+    string? avatar_url;
+};
+
+dictionary SubscribeInfo {
+    i64? plan_id;
+    string token;
+    i64? expired_at;
+    /// Bytes uploaded this period.
+    u64 upload;
+    /// Bytes downloaded this period.
+    u64 download;
+    /// Total bytes allowed this period.
+    u64 transfer_enable;
+    string subscribe_url;
+    u8? reset_day;
+};
+
+// ---------------------------------------------------------------------- //
+// Notices / plans / orders / tickets                                      //
+// ---------------------------------------------------------------------- //
+
+dictionary Notice {
+    i64 id;
+    string title;
+    /// Backend-rendered HTML. Render as plain text — see `notice.rs`.
+    string content;
+    string? img_url;
+    sequence<string> tags;
+    i64? created_at;
+    i64? updated_at;
+};
+
+dictionary Plan {
+    i64 id;
+    string name;
+    string content;
+    i64? group_id;
+    i32? kind;
+    /// Total monthly transfer in **GB**.
+    u64 transfer_enable;
+    i64? month_price;
+    i64? quarter_price;
+    i64? half_year_price;
+    i64? year_price;
+    i64? two_year_price;
+    i64? three_year_price;
+    i64? onetime_price;
+    i64? reset_price;
+    i32? reset_traffic_method;
+    boolean show;
+    boolean sell;
+    boolean renew;
+    i64? sort;
+    i64? created_at;
+    i64? updated_at;
+};
+
+dictionary PaymentMethod {
+    i64 id;
+    string name;
+    string payment;
+    string? icon;
+    i64? handling_fee_fixed;
+    f64? handling_fee_percent;
+};
+
+/// `kind` discriminates payment fulfilment, see `core::api::order::CheckoutResponse`.
+/// `data_json` is the *serialised* JSON of the upstream `data` field —
+/// the UI deserialises it into whatever shape it knows for `kind`.
+dictionary CheckoutResponse {
+    i32 kind;
+    string data_json;
+};
+
+dictionary SaveOrderArgs {
+    i64 plan_id;
+    /// One of `month_price` / `quarter_price` / etc.
+    string period;
+    string? coupon_code;
+};
+
+dictionary Order {
+    i64 id;
+    string trade_no;
+    i64? plan_id;
+    string? period;
+    i32? kind;
+    i32 status;
+    i32? commission_status;
+    /// Cents.
+    i64 total_amount;
+    i64? balance_amount;
+    i64? discount_amount;
+    i64? surplus_amount;
+    i64? refund_amount;
+    i64? created_at;
+    i64? updated_at;
+};
+
+dictionary Ticket {
+    i64 id;
+    i32 level;
+    i32 reply_status;
+    i32 status;
+    string subject;
+    i64? last_reply_user_id;
+    i64? created_at;
+    i64? updated_at;
+};
+
+dictionary TicketMessage {
+    i64 id;
+    i64 ticket_id;
+    i64? user_id;
+    string message;
+    boolean is_me;
+    i64? created_at;
+};
+
+dictionary TicketDetail {
+    i64 id;
+    i32 level;
+    i32 reply_status;
+    i32 status;
+    string subject;
+    sequence<TicketMessage> message;
+    i64? created_at;
+    i64? updated_at;
+};
+
+dictionary SaveTicketArgs {
+    string subject;
+    i32 level;
+    string message;
+};
+
+// ---------------------------------------------------------------------- //
+// Kernel control plane                                                    //
+// ---------------------------------------------------------------------- //
+
+dictionary ProxyGroup {
+    string name;
+    string kind;
+    string? now;
+    sequence<string> all;
+};
+
+dictionary TrafficStats {
+    /// Bytes per second.
+    u64 up;
+    u64 down;
+    u64 up_total;
+    u64 down_total;
+};
+
+// ---------------------------------------------------------------------- //
+// Client                                                                  //
+// ---------------------------------------------------------------------- //
+
+interface Client {
+    /// Construct a fresh client pointed at `backend_base_url`. The
+    /// `secure` callback is invoked synchronously inside auth / hydrate
+    /// methods — a dummy in-memory impl is fine for tests.
+    [Throws=FfiError]
+    constructor(string backend_base_url, string locale, SecureStore secure);
+
+    /// Cold start: try to repopulate the in-process bearer + return a
+    /// LoginSummary. `None` means SecureStore had no entry (= sign in).
+    [Async, Throws=FfiError]
+    LoginSummary? hydrate_session();
+
+    /// Fast probe — does the bearer we just hydrated still work?
+    [Async, Throws=FfiError]
+    boolean check_login();
+
+    [Async, Throws=FfiError]
+    LoginSummary login(LoginArgs args);
+
+    [Async, Throws=FfiError]
+    LoginSummary register(RegisterArgs args);
+
+    [Async, Throws=FfiError]
+    void send_email_verify(string email);
+
+    [Async, Throws=FfiError]
+    void forget_password(ForgetPasswordArgs args);
+
+    /// Clears the bearer + persisted session. Always succeeds; failures
+    /// from the SecureStore delete are swallowed (best-effort).
+    [Async]
+    void logout();
+
+    [Async, Throws=FfiError]
+    SiteConfig fetch_site_config();
+
+    [Async, Throws=FfiError]
+    UserInfo current_user();
+
+    [Async, Throws=FfiError]
+    SubscribeInfo current_subscribe();
+
+    [Async, Throws=FfiError]
+    sequence<Notice> fetch_notices();
+
+    [Async, Throws=FfiError]
+    sequence<Plan> fetch_plans();
+
+    [Async, Throws=FfiError]
+    sequence<PaymentMethod> fetch_payment_methods();
+
+    /// Returns the freshly-allocated `trade_no`.
+    [Async, Throws=FfiError]
+    string save_order(SaveOrderArgs args);
+
+    [Async, Throws=FfiError]
+    CheckoutResponse checkout_order(string trade_no, i64 method_id);
+
+    /// Returns the order's status integer (0/1/2/3/4 — see `Order::status`).
+    [Async, Throws=FfiError]
+    i32 check_order(string trade_no);
+
+    [Async, Throws=FfiError]
+    void cancel_order(string trade_no);
+
+    [Async, Throws=FfiError]
+    sequence<Order> fetch_orders();
+
+    [Async, Throws=FfiError]
+    sequence<Ticket> fetch_tickets();
+
+    [Async, Throws=FfiError]
+    TicketDetail fetch_ticket(i64 id);
+
+    [Async, Throws=FfiError]
+    void reply_ticket(i64 id, string message);
+
+    [Async, Throws=FfiError]
+    void close_ticket(i64 id);
+
+    /// `None` means the backend returned `true` rather than an id —
+    /// caller should re-fetch the list.
+    [Async, Throws=FfiError]
+    i64? save_ticket(SaveTicketArgs args);
+};
+
+// ---------------------------------------------------------------------- //
+// ConnectionManager                                                       //
+// ---------------------------------------------------------------------- //
+
+interface ConnectionManager {
+    /// `kernel_binary_path` resolves the bundled mihomo sidecar. On
+    /// desktop the Tauri shell computes it from `tauri-plugin-shell`; on
+    /// Android the host extracts the binary from jniLibs to a real
+    /// filesystem path before constructing the manager.
+    ///
+    /// `tun_delegate` is consulted only on mobile — desktop builds pass
+    /// `None` and the kernel manager uses the platform helper / service
+    /// installed under `M1/M2`.
+    [Throws=FfiError]
+    constructor(
+        Client client,
+        string kernel_binary_path,
+        string work_dir,
+        string cache_dir,
+        TunDelegate? tun_delegate
+    );
+
+    /// Replay current state once, then forward every state change to
+    /// `observer`. The observer is held until `unsubscribe_state` or the
+    /// manager itself is dropped.
+    void subscribe_state(StateObserver observer);
+
+    /// Drops every observer registered via `subscribe_state`.
+    void unsubscribe_state();
+
+    [Async, Throws=FfiError]
+    void connect();
+
+    [Async, Throws=FfiError]
+    void disconnect();
+
+    [Throws=FfiError]
+    void set_tunnel_mode(TunnelMode mode);
+
+    TunnelMode requested_mode();
+
+    ConnectionState current_state();
+
+    [Async, Throws=FfiError]
+    sequence<ProxyGroup> proxies();
+
+    [Async, Throws=FfiError]
+    void select_proxy(string group, string node);
+
+    /// `u32::MAX` (4_294_967_295) means timeout.
+    [Async, Throws=FfiError]
+    u32 latency_test(string node);
+
+    [Async, Throws=FfiError]
+    TrafficStats current_traffic();
+};

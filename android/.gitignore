@@ -1,0 +1,25 @@
+# Gradle
+.gradle/
+build/
+local.properties
+captures/
+.cxx/
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Generated FFI bindings (re-derived per-build by `core-android-bindings`).
+app/src/main/kotlin/com/xboard/client/core/
+
+# Native libs (reproduced per-target by `cargo ndk` + `install-mihomo-android.sh`).
+app/src/main/jniLibs/
+
+# Keystore files (release signing only — never check these in)
+*.jks
+*.keystore
+
+# OS junk
+.DS_Store

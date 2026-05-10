@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    `android:allowBackup="false"` in the manifest means this file is
+    largely advisory. Listed exclusions match what we'd want to drop
+    if backup is ever turned on — credentials and the kernel cache
+    must never leave the device through Auto Backup.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="xboard_secure_prefs.xml" />
+    <exclude domain="sharedpref" path="xboard_secure_prefs.xml.bak" />
+    <exclude domain="file" path="kernel/" />
+</full-backup-content>
