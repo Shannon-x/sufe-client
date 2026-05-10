@@ -64,7 +64,7 @@ androidx-datastore-preferences = { module = "androidx.datastore:datastore-prefer
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
 
 # UniFFI runtime
-jna = { module = "net.java.dev.jna", version.ref = "jna" }
+jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
 
 # Serialization
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }

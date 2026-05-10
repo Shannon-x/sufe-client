@@ -16,6 +16,7 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 #![warn(rust_2018_idioms, missing_debug_implementations)]
+#![allow(clippy::empty_line_after_doc_comments)]
 
 pub mod api;
 pub mod error;
