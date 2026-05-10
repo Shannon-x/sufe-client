@@ -106,6 +106,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Linux build dependencies
+        # `:app:generateUniffiBindings` runs cargo on the host (linux),
+        # which pulls libdbus-sys via keyring.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libdbus-1-dev \
+            libssl-dev \
+            pkg-config
+
       - name: Install Rust toolchain (Android targets)
         uses: dtolnay/rust-toolchain@stable
         with:

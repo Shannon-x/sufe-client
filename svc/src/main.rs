@@ -618,7 +618,7 @@ mod imp {
         }
 
         let proc_h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) };
-        if proc_h == 0 {
+        if proc_h.is_null() {
             anyhow::bail!("OpenProcess({pid}): {}", last_error_string());
         }
         let result = sid_for_process(proc_h);
@@ -632,7 +632,7 @@ mod imp {
     }
 
     fn sid_for_process(proc_h: HANDLE) -> anyhow::Result<String> {
-        let mut tok: HANDLE = 0;
+        let mut tok: HANDLE = std::ptr::null_mut();
         let ok = unsafe { OpenProcessToken(proc_h, TOKEN_QUERY, &mut tok) };
         if ok == 0 {
             anyhow::bail!("OpenProcessToken: {}", last_error_string());

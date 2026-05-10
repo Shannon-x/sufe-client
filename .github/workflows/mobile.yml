@@ -46,6 +46,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Linux build dependencies
+        # The `:app:generateUniffiBindings` Gradle task runs `cargo run -p
+        # xboard-core --bin uniffi-bindgen` on the host, which compiles
+        # xboard-core for x86_64-unknown-linux-gnu and pulls in keyring →
+        # libdbus-sys. The build script needs libdbus-1 dev headers.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libdbus-1-dev \
+            libssl-dev \
+            pkg-config
+
       - name: Install Rust toolchain (Android targets)
         uses: dtolnay/rust-toolchain@stable
         with:
