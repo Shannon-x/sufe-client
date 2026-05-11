@@ -52,6 +52,10 @@ windows-service = "0.7"
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
+    # SHELLEXECUTEINFOW carries an HKEY field, so the struct is gated behind
+    # the registry feature. ShellExecuteExW transitively wants the same
+    # feature because its signature references SHELLEXECUTEINFOW.
+    "Win32_System_Registry",
     "Win32_UI_Shell",
     "Win32_UI_Shell_Common",
     "Win32_UI_WindowsAndMessaging",

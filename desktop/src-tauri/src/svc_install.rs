@@ -21,7 +21,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tauri::{AppHandle, Manager};
-use tauri_plugin_shell::ShellExt;
 use windows_sys::Win32::Foundation::CloseHandle;
 use windows_sys::Win32::Foundation::{GetLastError, ERROR_CANCELLED};
 use windows_sys::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
