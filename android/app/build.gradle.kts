@@ -62,12 +62,14 @@ android {
             versionNameSuffix = "-debug"
         }
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            // R8 / minify disabled for the v0.1.x line — JNA pulls java.awt.*
+            // and Tink pulls javax.annotation.* references that R8 flags as
+            // missing classes. Both are runtime-irrelevant on Android, but
+            // exhausting the -dontwarn list takes more iteration than the
+            // ~15 MB APK savings buy us right now. Re-enable once a proper
+            // proguard-rules.pro is in place (M6+).
+            isMinifyEnabled = false
+            isShrinkResources = false
             // Signing config is injected by CI (see .github/workflows/mobile.yml).
             // For local release builds, copy keystore.properties.example to
             // keystore.properties and uncomment the signingConfig hookup below.
