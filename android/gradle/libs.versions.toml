@@ -35,6 +35,11 @@ jna = "5.15.0"
 # already JSON-decoded inside Rust.
 kotlinx-serialization = "1.7.3"
 
+# Material Components for Android — provides the XML view-system Material 3
+# themes (Theme.Material3.DayNight.*) referenced by `res/values/themes.xml`.
+# compose-material3 alone does NOT ship these XML themes.
+material = "1.12.0"
+
 [libraries]
 # Core / lifecycle / activity
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "core-ktx" }
@@ -68,6 +73,9 @@ jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
 
 # Serialization
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinx-serialization" }
+
+# Material XML themes (Theme.Material3.DayNight.*)
+material = { module = "com.google.android.material:material", version.ref = "material" }
 
 [plugins]
 androidApplication = { id = "com.android.application", version.ref = "agp" }

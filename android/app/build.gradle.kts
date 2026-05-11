@@ -150,6 +150,11 @@ dependencies {
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.navigation.compose)
 
+    // Material Components for Android — required because res/values/themes.xml
+    // references Theme.Material3.DayNight.NoActionBar, which is an XML-only
+    // style not bundled with compose-material3.
+    implementation(libs.material)
+
     // Persistence
     implementation(libs.androidx.security.crypto)
     implementation(libs.androidx.datastore.preferences)

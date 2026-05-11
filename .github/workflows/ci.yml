@@ -93,6 +93,14 @@ jobs:
         working-directory: desktop
         run: npm ci --no-audit --fund=false
 
+      # `tauri-build` build script verifies all `externalBin` entries exist
+      # before any rustc runs, so we need the linux mihomo binary on disk
+      # even for a clippy-only pass.
+      - name: Fetch mihomo Linux sidecar
+        env:
+          MIHOMO_VERSION: ${{ vars.MIHOMO_VERSION || 'v1.18.7' }}
+        run: bash ci/scripts/install-mihomo-sidecar.sh "${MIHOMO_VERSION}"
+
       - name: vue-tsc + clippy
         run: |
           cargo clippy -p xboard-desktop --all-targets -- -D warnings

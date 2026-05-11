@@ -118,7 +118,7 @@ fn run_elevated(exe: &Path, verb: &str) -> Result<(), LauncherError> {
             "ShellExecuteEx({verb}) failed: Win32 error {code}"
         )));
     }
-    if sei.hProcess == 0 {
+    if sei.hProcess.is_null() {
         // Some shell verbs don't return a process handle — treat as success
         // because `runas` should always give us one, but be defensive.
         return Ok(());
