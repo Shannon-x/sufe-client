@@ -51,6 +51,8 @@
 "connect.status.applying_route" = "Applying routes";
 "connect.status.connected_tun" = "Connected (TUN)";
 "connect.status.connected_proxy" = "Connected (system proxy)";
+"connect.status.auto_connecting" = "Signed in, syncing subscription and connecting…";
+"connect.status.auto_connected" = "Connected and node list synced";
 "connect.node.current" = "Current node";
 "connect.node.none" = "None";
 "connect.node.pick" = "Choose node";

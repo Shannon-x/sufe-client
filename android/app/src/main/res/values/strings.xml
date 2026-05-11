@@ -232,6 +232,8 @@
     <string name="connect_current_node">当前节点</string>
     <string name="connect_live_traffic">实时流量</string>
     <string name="connect_mode_reconnect">模式已切换,正在重新建立连接…</string>
+    <string name="connect_auto_connecting">登录成功,正在自动同步订阅并连接节点…</string>
+    <string name="connect_auto_connected">已连接并同步节点列表</string>
     <string name="connect_retry">重试</string>
     <string name="connect_view_logs">查看日志</string>
     <string name="connect_mode_tun">TUN（推荐）</string>

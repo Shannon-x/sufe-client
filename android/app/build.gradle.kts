@@ -41,7 +41,7 @@ android {
         // or env var `XBOARD_DEFAULT_BACKEND_URL`.
         val defaultBackend = (project.findProperty("xboard.defaultBackendUrl") as String?)
             ?: System.getenv("XBOARD_DEFAULT_BACKEND_URL")
-            ?: "https://your-xboard-panel.example.com"
+            ?: "https://imitate.cnqq.de"
         buildConfigField("String", "DEFAULT_BACKEND_URL", "\"$defaultBackend\"")
 
         ndk {

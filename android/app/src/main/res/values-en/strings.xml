@@ -224,6 +224,8 @@
     <string name="connect_current_node">Current node</string>
     <string name="connect_live_traffic">Live traffic</string>
     <string name="connect_mode_reconnect">Mode switched, reconnecting…</string>
+    <string name="connect_auto_connecting">Signed in, syncing subscription and connecting…</string>
+    <string name="connect_auto_connected">Connected and node list synced</string>
     <string name="connect_retry">Retry</string>
     <string name="connect_view_logs">View logs</string>
     <string name="connect_mode_tun">TUN (recommended)</string>

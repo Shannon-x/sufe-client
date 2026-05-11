@@ -80,7 +80,7 @@ and writes `app/src/main/kotlin/com/xboard/client/core/xboard_core.kt`.
 ## Backend URL
 
 The default backend baked into `BuildConfig.DEFAULT_BACKEND_URL` is
-`https://your-xboard-panel.example.com` — override via:
+`https://imitate.cnqq.de` — override via:
 
 - `gradle.properties` (do not commit): `xboard.defaultBackendUrl=https://panel.example.com`
 - env var: `XBOARD_DEFAULT_BACKEND_URL=https://panel.example.com`

@@ -26,6 +26,8 @@ struct RootView: View {
                 Text(model.snackbar ?? "")
             }
         )
+        .tint(ProtonStyle.accent)
+        .preferredColorScheme(.dark)
     }
 }
 

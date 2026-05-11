@@ -91,6 +91,7 @@ data class ConnectionUiState(
     val mode: TunnelMode = TunnelMode.TUN,
     val proxies: List<ProxyGroup> = emptyList(),
     val selectedNode: String? = null,
+    val selectedRoute: String? = null,
     val traffic: TrafficStats? = null,
     val recentLog: String = "",
     val errorMessage: String? = null,

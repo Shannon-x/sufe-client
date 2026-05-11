@@ -2,6 +2,14 @@ import Foundation
 import Observation
 import UIKit
 
+struct ProxyGroupSnapshot: Identifiable, Hashable {
+    var id: String { name }
+    let name: String
+    let kind: String
+    var now: String?
+    let all: [String]
+}
+
 /// Single source of truth for the iOS shell. Held by the `App` scene and
 /// passed into every screen via `@Bindable` / direct binding. Mirrors
 /// `AppViewModel` on the Android side — but uses `@Observable` instead
@@ -34,8 +42,9 @@ final class AppModel {
     // ---------- connection ----------
     var connectionState: ConnectionState = .disconnected
     var requestedMode: TunnelMode = .tun
-    var proxies: [ProxyGroup] = []
+    var proxies: [ProxyGroupSnapshot] = []
     var selectedNode: String?
+    var selectedRoute: String?
     var traffic: TrafficStats?
 
     // ---------- transient banners ----------
@@ -46,6 +55,9 @@ final class AppModel {
     private var manager: ConnectionManager?
     private let store = KeychainSecureStore()
     private let connectionController = ConnectionController()
+    private var subscribeYaml: String?
+    private var selectedOverrides: [String: String] = [:]
+    private var autoConnectAfterAuth = false
 
     private init() {}
 
@@ -71,7 +83,7 @@ final class AppModel {
         if let v = Bundle.main.object(forInfoDictionaryKey: "XboardDefaultBackendURL") as? String {
             return v
         }
-        return "https://your-xboard-panel.example.com"
+        return "https://imitate.cnqq.de"
     }
 
     // ---------- auth ----------
@@ -88,6 +100,8 @@ final class AppModel {
                 recaptcha: nil,
                 turnstile: nil
             ))
+            autoConnectAfterAuth = true
+            await afterAuth()
         } catch {
             loginError = friendly(error)
         }
@@ -107,6 +121,8 @@ final class AppModel {
                 recaptcha: nil,
                 turnstile: nil
             ))
+            autoConnectAfterAuth = true
+            await afterAuth()
         } catch {
             loginError = friendly(error)
         }
@@ -138,6 +154,7 @@ final class AppModel {
 
     func logout() async {
         guard let c = client else { return }
+        await disconnect()
         await c.logout()
         session = nil
         user = nil
@@ -147,6 +164,20 @@ final class AppModel {
         orders = nil
         tickets = nil
         ticketDetail = nil
+        proxies = []
+        selectedNode = nil
+        selectedRoute = nil
+        subscribeYaml = nil
+        selectedOverrides = [:]
+    }
+
+    private func afterAuth() async {
+        await refreshHome()
+        if autoConnectAfterAuth {
+            autoConnectAfterAuth = false
+            snackbar = String(localized: "connect.status.auto_connecting")
+            await connect()
+        }
     }
 
     // ---------- site config ----------
@@ -278,16 +309,25 @@ final class AppModel {
     func connect() async {
         guard let s = session else { return }
         do {
+            connectionState = .connecting(stage: .fetching, mode: requestedMode)
             // The NE provider doesn't have FFI access — it can't call
             // `current_subscribe()` itself. The main app fetches the YAML
             // and writes the JSON-rendered config to UserDefaults the
             // extension can read via `suiteName`.
-            try await connectionController.start(
+            let yaml = try await connectionController.fetchSubscribeYAML(
                 subscribeToken: s.subscribeToken,
-                backend: backendBaseURL(),
+                backend: backendBaseURL()
+            )
+            subscribeYaml = yaml
+            updateProxySnapshot(from: yaml)
+
+            connectionState = .connecting(stage: .spawning, mode: requestedMode)
+            try await connectionController.start(
+                subscribeYaml: applySelectionOverrides(to: yaml),
                 mode: requestedMode
             )
-            connectionState = .connecting(stage: .spawning, mode: requestedMode)
+            connectionState = .connected(since: Date(), mode: requestedMode, mixedPort: 7890)
+            snackbar = String(localized: "connect.status.auto_connected")
         } catch {
             snackbar = friendly(error)
             connectionState = .failed(message: friendly(error), mode: requestedMode)
@@ -304,21 +344,190 @@ final class AppModel {
     }
 
     func refreshProxies() async {
-        guard let m = manager else { return }
-        do { proxies = try await m.proxies() }
-        catch { snackbar = friendly(error) }
+        if let yaml = subscribeYaml {
+            updateProxySnapshot(from: yaml)
+            return
+        }
+        guard let s = session else { return }
+        do {
+            let yaml = try await connectionController.fetchSubscribeYAML(
+                subscribeToken: s.subscribeToken,
+                backend: backendBaseURL()
+            )
+            subscribeYaml = yaml
+            updateProxySnapshot(from: yaml)
+        } catch {
+            snackbar = friendly(error)
+        }
     }
 
     func selectProxy(group: String, node: String) async {
-        guard let m = manager else { return }
-        do { try await m.selectProxy(group: group, node: node) }
-        catch { snackbar = friendly(error) }
+        selectedOverrides[group] = node
+        updateSelectedNode(primary: group, current: node)
+        if case .connected = connectionState {
+            await connectionController.stop()
+            await connect()
+        }
     }
 
     func latencyTest(_ node: String) async -> UInt32 {
         guard let m = manager else { return UInt32.max }
         do { return try await m.latencyTest(node: node) }
         catch { return UInt32.max }
+    }
+
+    private func updateProxySnapshot(from yaml: String) {
+        proxies = parseProxyGroups(from: yaml).map { group in
+            var copy = group
+            copy.now = selectedOverrides[group.name] ?? group.now
+            return copy
+        }
+        if let primary = proxies.first {
+            updateSelectedNode(primary: primary.name, current: primary.now)
+        } else {
+            selectedNode = nil
+            selectedRoute = nil
+        }
+    }
+
+    private func updateSelectedNode(primary: String?, current: String?) {
+        guard let current else {
+            selectedNode = nil
+            selectedRoute = nil
+            return
+        }
+        let effective = resolveProxyLeaf(current, groups: proxies)
+        selectedNode = effective
+        selectedRoute = effective == current ? nil : [primary, current].compactMap { $0 }.joined(separator: " / ")
+    }
+
+    private func resolveProxyLeaf(_ name: String, groups: [ProxyGroupSnapshot]) -> String {
+        var seen = Set<String>()
+        var current = name
+        while !seen.contains(current) {
+            seen.insert(current)
+            guard let group = groups.first(where: { $0.name == current }), let next = group.now else {
+                return current
+            }
+            current = next
+        }
+        return current
+    }
+
+    private func parseProxyGroups(from yaml: String) -> [ProxyGroupSnapshot] {
+        let lines = yaml.components(separatedBy: .newlines)
+        var blocks: [[String]] = []
+        var current: [String] = []
+        var inGroups = false
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed == "proxy-groups:" {
+                inGroups = true
+                continue
+            }
+            if inGroups && !line.hasPrefix(" ") && !line.hasPrefix("-") && !trimmed.isEmpty {
+                break
+            }
+            guard inGroups else { continue }
+            if trimmed.hasPrefix("- ") {
+                if !current.isEmpty { blocks.append(current) }
+                current = [String(trimmed.dropFirst(2))]
+            } else if !current.isEmpty {
+                current.append(trimmed)
+            }
+        }
+        if !current.isEmpty { blocks.append(current) }
+
+        return blocks.compactMap { block in
+            let joined = block.joined(separator: "\n")
+            guard let name = yamlScalar("name", in: joined) else { return nil }
+            let kind = normalizeGroupKind(yamlScalar("type", in: joined) ?? "select")
+            let nodes = yamlList("proxies", in: block)
+            guard !nodes.isEmpty else { return nil }
+            return ProxyGroupSnapshot(name: name, kind: kind, now: nodes.first, all: nodes)
+        }
+    }
+
+    private func yamlScalar(_ key: String, in text: String) -> String? {
+        for part in text.replacingOccurrences(of: "{", with: "\n")
+            .replacingOccurrences(of: "}", with: "\n")
+            .components(separatedBy: CharacterSet(charactersIn: ",\n")) {
+            let trimmed = part.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("\(key):") else { continue }
+            return cleanYamlToken(String(trimmed.dropFirst(key.count + 1)))
+        }
+        return nil
+    }
+
+    private func yamlList(_ key: String, in block: [String]) -> [String] {
+        let joined = block.joined(separator: "\n")
+        if let start = joined.range(of: "\(key): ["),
+           let end = joined[start.upperBound...].firstIndex(of: "]") {
+            return joined[start.upperBound..<end]
+                .split(separator: ",")
+                .map { cleanYamlToken(String($0)) }
+                .filter { !$0.isEmpty }
+        }
+
+        guard let idx = block.firstIndex(where: { $0 == "\(key):" }) else { return [] }
+        return block[(idx + 1)...]
+            .prefix { $0.hasPrefix("- ") }
+            .map { cleanYamlToken(String($0.dropFirst(2))) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func cleanYamlToken(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+    }
+
+    private func normalizeGroupKind(_ raw: String) -> String {
+        switch raw.lowercased() {
+        case "select", "selector": return "Selector"
+        case "url-test", "urltest": return "URLTest"
+        case "fallback": return "Fallback"
+        case "load-balance", "loadbalance": return "LoadBalance"
+        default: return raw
+        }
+    }
+
+    private func applySelectionOverrides(to yaml: String) -> String {
+        var patched = yaml
+        for (group, selected) in selectedOverrides {
+            patched = moveNodeToFront(group: group, node: selected, yaml: patched)
+        }
+        return patched
+    }
+
+    private func moveNodeToFront(group: String, node: String, yaml: String) -> String {
+        let lines = yaml.components(separatedBy: .newlines)
+        var out: [String] = []
+        var pendingGroup: String?
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("- ") {
+                pendingGroup = yamlScalar("name", in: String(trimmed.dropFirst(2))) ?? pendingGroup
+            }
+            if pendingGroup == group,
+               let range = line.range(of: "proxies: ["),
+               let end = line[range.upperBound...].firstIndex(of: "]") {
+                let before = line[..<range.upperBound]
+                let after = line[end...]
+                var nodes = line[range.upperBound..<end]
+                    .split(separator: ",")
+                    .map { cleanYamlToken(String($0)) }
+                    .filter { !$0.isEmpty }
+                if let idx = nodes.firstIndex(of: node) {
+                    nodes.remove(at: idx)
+                    nodes.insert(node, at: 0)
+                    out.append("\(before)\(nodes.joined(separator: ", "))\(after)")
+                    continue
+                }
+            }
+            out.append(line)
+        }
+        return out.joined(separator: "\n")
     }
 
     // ---------- error formatting ----------

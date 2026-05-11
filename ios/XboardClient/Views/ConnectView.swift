@@ -17,7 +17,7 @@ struct ConnectView: View {
                     model.setMode(newMode)
                 }
 
-                CurrentNodeRow(name: model.selectedNode) {
+                CurrentNodeRow(name: model.selectedNode, route: model.selectedRoute) {
                     nodesOpen = true
                 }
 
@@ -138,6 +138,7 @@ private struct ModeSwitch: View {
 
 private struct CurrentNodeRow: View {
     let name: String?
+    let route: String?
     let onPick: () -> Void
 
     var body: some View {
@@ -148,6 +149,11 @@ private struct CurrentNodeRow: View {
                     .foregroundStyle(.secondary)
                 Text(name ?? String(localized: "connect.node.none"))
                     .font(.body)
+                if let route, !route.isEmpty {
+                    Text(route)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
             Spacer()
             Button(String(localized: "connect.node.pick"), action: onPick)

@@ -51,6 +51,8 @@
 "connect.status.applying_route" = "应用路由";
 "connect.status.connected_tun" = "已连接（TUN）";
 "connect.status.connected_proxy" = "已连接（系统代理）";
+"connect.status.auto_connecting" = "登录成功，正在自动同步订阅并连接节点…";
+"connect.status.auto_connected" = "已连接并同步节点列表";
 "connect.node.current" = "当前节点";
 "connect.node.none" = "未选择";
 "connect.node.pick" = "选择节点";

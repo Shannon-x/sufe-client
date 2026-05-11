@@ -75,6 +75,7 @@ fun ConnectScreen(
 
             CurrentNodeRow(
                 nodeName = ui.selectedNode,
+                route = ui.selectedRoute,
                 onOpenNodes = {
                     viewModel.refreshProxies()
                     nodesOpen = true
@@ -227,7 +228,7 @@ private fun ModeSwitch(current: TunnelMode, onPick: (TunnelMode) -> Unit) {
 }
 
 @Composable
-private fun CurrentNodeRow(nodeName: String?, onOpenNodes: () -> Unit) {
+private fun CurrentNodeRow(nodeName: String?, route: String?, onOpenNodes: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(16.dp),
@@ -245,6 +246,13 @@ private fun CurrentNodeRow(nodeName: String?, onOpenNodes: () -> Unit) {
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
+                if (!route.isNullOrBlank()) {
+                    Text(
+                        text = route,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             OutlinedButton(onClick = onOpenNodes) {
                 Text(stringResource(R.string.connect_button_nodes))

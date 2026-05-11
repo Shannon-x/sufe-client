@@ -57,6 +57,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val container: AppContainer = AppContainer.get(application)
     private val client: Client get() = container.client
     private var manager: ConnectionManager? = null
+    private var tunDelegate: AndroidTunDelegate? = null
     private var trafficPollJob: Job? = null
 
     // ----- Auth -------------------------------------------------------------
@@ -97,6 +98,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private val _events = MutableSharedFlow<UiEvent>(extraBufferCapacity = 8)
     val events: SharedFlow<UiEvent> = _events.asSharedFlow()
     private val eventCounter = AtomicLong()
+    @Volatile
+    private var autoConnectAfterAuth = false
 
     /** Hydrate persisted session on cold start. Call from MainActivity. */
     fun bootstrap() {
@@ -138,6 +141,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 client.login(LoginArgs(email.trim(), password, recaptcha, turnstile))
             }.onSuccess {
                 _authState.value = AuthState.Authenticated(it)
+                autoConnectAfterAuth = true
                 refreshHome()
             }.onFailure {
                 _authState.value = AuthState.Anonymous
@@ -153,6 +157,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             runCatching { client.register(args) }
                 .onSuccess {
                     _authState.value = AuthState.Authenticated(it)
+                    autoConnectAfterAuth = true
                     refreshHome()
                 }
                 .onFailure {
@@ -327,8 +332,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      * — the foreground notification is up by then. Errors are routed
      * onto the snackbar / `connection.errorMessage`.
      */
-    fun connect(binder: VpnBinder) {
+    fun connect(binder: VpnBinder, announceAuto: Boolean = false) {
         viewModelScope.launch {
+            if (announceAuto) {
+                snackbar(getApplication<Application>().getString(
+                    com.xboard.client.R.string.connect_auto_connecting,
+                ))
+            }
             _connection.update { it.copy(errorMessage = null) }
             val delegate: AndroidTunDelegate? = binder.prepareAndBind()
             if (delegate == null) {
@@ -341,6 +351,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             ensureManager(delegate)
             runCatching { manager!!.connect() }
+                .onSuccess {
+                    if (announceAuto) {
+                        snackbar(getApplication<Application>().getString(
+                            com.xboard.client.R.string.connect_auto_connected,
+                        ))
+                    }
+                }
                 .onFailure {
                     val msg = it.userMessage()
                     _connection.update { it.copy(errorMessage = msg) }
@@ -386,13 +403,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         val mgr = manager ?: return
         viewModelScope.launch {
             val list = runCatchingFfi { mgr.proxies() } ?: return@launch
-            val selected = list.firstOrNull()?.now ?: list.firstOrNull { it.now != null }?.now
-            _connection.update { it.copy(proxies = list, selectedNode = selected) }
+            val primary = list.firstOrNull()
+            val selected = primary?.now ?: list.firstOrNull { it.now != null }?.now
+            val effective = selected?.let { resolveProxyLeaf(it, list) }
+            _connection.update {
+                it.copy(
+                    proxies = list,
+                    selectedNode = effective ?: selected,
+                    selectedRoute = if (effective != null && effective != selected) {
+                        listOfNotNull(primary?.name, selected).joinToString(" / ")
+                    } else {
+                        null
+                    },
+                )
+            }
+            if (_connection.value.state is ConnectionState.Connected) {
+                tunDelegate?.reportNode(_connection.value.selectedNode)
+            }
         }
+    }
+
+    fun consumeAutoConnectAfterAuth(): Boolean {
+        if (!autoConnectAfterAuth) return false
+        autoConnectAfterAuth = false
+        return true
     }
 
     private fun ensureManager(delegate: AndroidTunDelegate) {
         if (manager != null) return
+        tunDelegate = delegate
         val mgr = container.connectionManager(delegate)
         manager = mgr
         mgr.subscribeState(object : StateObserver {
@@ -452,6 +491,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private fun Throwable.userMessage(): String = when (this) {
         is FfiException -> message ?: this::class.java.simpleName
         else -> message ?: this::class.java.simpleName
+    }
+
+    private fun resolveProxyLeaf(name: String, groups: List<com.xboard.client.core.ProxyGroup>): String {
+        val seen = LinkedHashSet<String>()
+        var current = name
+        while (seen.add(current)) {
+            val group = groups.firstOrNull { it.name == current } ?: return current
+            val next = group.now ?: return current
+            current = next
+        }
+        return current
     }
 
     override fun onCleared() {

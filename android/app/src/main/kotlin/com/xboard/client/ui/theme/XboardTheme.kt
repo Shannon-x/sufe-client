@@ -1,7 +1,6 @@
 package com.xboard.client.ui.theme
 
 import android.os.Build
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -15,10 +14,10 @@ import androidx.compose.ui.platform.LocalContext
 // brand_primary / brand_secondary / brand_tertiary so XML-rendered
 // icons match the Compose theme.
 
-private val BrandPrimary = Color(0xFF4F46E5)
-private val BrandSecondary = Color(0xFF06B6D4)
-private val BrandTertiary = Color(0xFFF59E0B)
-private val ErrorColor = Color(0xFFDC2626)
+private val BrandPrimary = Color(0xFF7C5CFF)
+private val BrandSecondary = Color(0xFF00C48C)
+private val BrandTertiary = Color(0xFFFF6380)
+private val ErrorColor = Color(0xFFFF4057)
 
 private val LightColors = lightColorScheme(
     primary = BrandPrimary,
@@ -40,22 +39,22 @@ private val LightColors = lightColorScheme(
 )
 
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFFA5B4FC),
-    onPrimary = Color(0xFF1E1B4B),
-    primaryContainer = Color(0xFF312E81),
-    onPrimaryContainer = Color(0xFFE0E7FF),
-    secondary = Color(0xFF67E8F9),
-    onSecondary = Color(0xFF083344),
-    tertiary = Color(0xFFFBBF24),
-    onTertiary = Color(0xFF422006),
-    background = Color(0xFF0B1020),
-    onBackground = Color(0xFFE5E7EB),
-    surface = Color(0xFF111827),
-    onSurface = Color(0xFFE5E7EB),
-    surfaceVariant = Color(0xFF1F2937),
-    onSurfaceVariant = Color(0xFFD1D5DB),
-    error = Color(0xFFFCA5A5),
-    onError = Color(0xFF7F1D1D),
+    primary = BrandPrimary,
+    onPrimary = Color.White,
+    primaryContainer = Color(0xFF34265E),
+    onPrimaryContainer = Color(0xFFF0E9FF),
+    secondary = BrandSecondary,
+    onSecondary = Color(0xFF041B16),
+    tertiary = BrandTertiary,
+    onTertiary = Color.White,
+    background = Color(0xFF15121F),
+    onBackground = Color(0xFFF8F7FF),
+    surface = Color(0xFF211C2D),
+    onSurface = Color(0xFFF8F7FF),
+    surfaceVariant = Color(0xFF2D273B),
+    onSurfaceVariant = Color(0xFFBDB6CC),
+    error = ErrorColor,
+    onError = Color.White,
 )
 
 /**
@@ -66,8 +65,8 @@ private val DarkColors = darkColorScheme(
  */
 @Composable
 fun XboardTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    darkTheme: Boolean = true,
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val colors = when {

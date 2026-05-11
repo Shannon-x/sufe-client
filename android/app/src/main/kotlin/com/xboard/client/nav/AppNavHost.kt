@@ -92,6 +92,11 @@ fun AppNavHost(
                     AuthFlow(viewModel = viewModel)
                 }
                 is AuthState.Authenticated -> {
+                    LaunchedEffect(authState.summary.subscribeToken) {
+                        if (viewModel.consumeAutoConnectAfterAuth()) {
+                            viewModel.connect(vpnBinder, announceAuto = true)
+                        }
+                    }
                     MainFlow(viewModel = viewModel, vpnBinder = vpnBinder)
                 }
             }
@@ -132,6 +137,7 @@ private fun MainFlow(viewModel: AppViewModel, vpnBinder: VpnBinder) {
         composable(Routes.HOME) {
             HomeScreen(
                 viewModel = viewModel,
+                vpnBinder = vpnBinder,
                 onOpenConnect = { nav.navigate(Routes.CONNECT) },
                 onOpenPlans = { nav.navigate(Routes.PLANS) },
                 onOpenOrders = { nav.navigate(Routes.ORDERS) },

@@ -23,9 +23,7 @@ final class ConnectionController {
     /// Render the sing-box JSON for the current subscription, drop it in
     /// the App Group, and ask iOS to start the tunnel. The provider then
     /// reads the JSON and hands it to LibboxBoxService.
-    func start(subscribeToken: String, backend: String, mode: TunnelMode) async throws {
-        let yaml = try await fetchSubscribeYAML(subscribeToken: subscribeToken, backend: backend)
-
+    func start(subscribeYaml yaml: String, mode: TunnelMode) async throws {
         let json = try renderSingboxConfig(
             subscribeYaml: yaml,
             externalController: "127.0.0.1:9090",
@@ -50,6 +48,11 @@ final class ConnectionController {
             "modeRaw": NSString(string: mode == .tun ? "tun" : "system_proxy"),
         ])
         cached = manager
+    }
+
+    func start(subscribeToken: String, backend: String, mode: TunnelMode) async throws {
+        let yaml = try await fetchSubscribeYAML(subscribeToken: subscribeToken, backend: backend)
+        try await start(subscribeYaml: yaml, mode: mode)
     }
 
     func stop() async {
@@ -83,7 +86,7 @@ final class ConnectionController {
         return manager
     }
 
-    private func fetchSubscribeYAML(subscribeToken: String, backend: String) async throws -> String {
+    func fetchSubscribeYAML(subscribeToken: String, backend: String) async throws -> String {
         // The Xboard panel returns the mihomo YAML at `<backend>/api/v1/client/subscribe?token=...&flag=clash.meta`.
         // We hit it directly here (not through the UniFFI Client) because the
         // raw YAML body isn't surfaced on the FFI — only the parsed

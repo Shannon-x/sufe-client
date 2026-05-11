@@ -59,7 +59,7 @@ targets:
         UIRequiresFullScreen: false
         # Default backend; overridable at runtime via the secure-store key
         # "xboard.backend_base_url" (no in-app UI for it).
-        XboardDefaultBackendURL: "https://your-xboard-panel.example.com"
+        XboardDefaultBackendURL: "https://imitate.cnqq.de"
         # Surfaces in Settings → VPN. Apple shows this string verbatim.
         NEAppProxyEnabled: false
     entitlements:
