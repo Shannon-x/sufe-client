@@ -99,7 +99,7 @@ private fun OrderCard(order: Order, onCancel: () -> Unit) {
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                 )
-                StatusChip(status = order.status)
+                OrderStatusChip(status = order.status)
             }
 
             order.kind?.let { OrderMeta(label = stringResource(R.string.orders_col_kind), value = kindLabel(it)) }
@@ -144,7 +144,7 @@ private fun OrderMeta(label: String, value: String) {
 }
 
 @Composable
-private fun StatusChip(status: Int) {
+private fun OrderStatusChip(status: Int) {
     val (textRes, fg, bg) = when (status) {
         0 -> Triple(
             R.string.orders_status_pending,

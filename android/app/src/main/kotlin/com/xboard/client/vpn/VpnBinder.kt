@@ -1,5 +1,6 @@
 package com.xboard.client.vpn
 
+import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -47,7 +48,7 @@ class VpnBinder(private val activity: ComponentActivity) {
     private val permissionLauncher: ActivityResultLauncher<Intent> =
         activity.registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
                 result: ActivityResult ->
-            pendingPermission?.complete(result.resultCode == ComponentActivity.RESULT_OK)
+            pendingPermission?.complete(result.resultCode == Activity.RESULT_OK)
             pendingPermission = null
         }
 
