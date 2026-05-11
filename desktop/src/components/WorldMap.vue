@@ -61,6 +61,46 @@ const FALLBACK_STYLE: maplibregl.StyleSpecification = {
   ],
 };
 
+// OpenFreeMap dark uses OpenMapTiles' boundary schema, which renders both
+// country borders (admin_level=2) and every subnational division below.
+// Province / state / county lines clutter a node map without adding any
+// signal, so we hide them after the style loads. Country lines stay.
+function hideSubnationalBorders() {
+  if (!map) return;
+  const style = map.getStyle();
+  if (!style?.layers) return;
+  for (const layer of style.layers as Array<Record<string, unknown>>) {
+    const id = String(layer.id ?? "");
+    const sourceLayer = String((layer as { "source-layer"?: string })["source-layer"] ?? "");
+    const isAdmin =
+      sourceLayer === "boundary" || /admin|boundary/i.test(id);
+    if (!isAdmin) continue;
+
+    // Layer-name heuristic — covers OpenFreeMap's own naming (admin_sub*) and
+    // most OpenMapTiles-derived styles (state, province, subnational, etc.).
+    if (/sub|state|province|district|county|region|admin_level_[3-9]/i.test(id)) {
+      try {
+        map.setLayoutProperty(id, "visibility", "none");
+      } catch {
+        /* layer may have been removed by style swap */
+      }
+      continue;
+    }
+
+    // Filter heuristic — some styles keep all borders in one layer and
+    // discriminate by `admin_level`. If the layer's filter mentions
+    // admin_level 3 or higher, treat it as subnational.
+    const filterStr = JSON.stringify((layer as { filter?: unknown }).filter ?? null);
+    if (/admin_level[^\d]*([3-9]|1\d)/.test(filterStr)) {
+      try {
+        map.setLayoutProperty(id, "visibility", "none");
+      } catch {
+        /* noop */
+      }
+    }
+  }
+}
+
 function ensureArcSource() {
   if (!map || !mapLoaded) return;
   if (map.getSource("xboard-arcs")) return;
@@ -195,8 +235,14 @@ onMounted(() => {
   map.touchZoomRotate.disableRotation();
   map.on("load", () => {
     mapLoaded = true;
+    hideSubnationalBorders();
     ensureArcSource();
     renderPins();
+  });
+  // `style.load` fires for every setStyle call, including the offline-fallback
+  // swap below — re-apply the hide so the rule survives style changes.
+  map.on("styledata", () => {
+    if (mapLoaded) hideSubnationalBorders();
   });
   // If the OpenFreeMap CDN is unreachable (offline / GFW timeout), swap to
   // the minimal flat dark style so the markers still render rather than
