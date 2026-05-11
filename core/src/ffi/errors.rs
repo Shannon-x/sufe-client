@@ -99,20 +99,23 @@ impl From<XboardError> for FfiError {
 /// [`super::secure::CallbackSecureStore`] — the rest of the crate keeps a
 /// single error type.
 ///
-/// Declared as a struct-style variant (`Backend { message: String }`) rather
+/// Declared as a struct-style variant (`Backend { reason: String }`) rather
 /// than a tuple variant because UniFFI's `[Error] interface` rich-error mode
-/// matches by named field and would reject `Backend(String)`.
+/// matches by named field and would reject `Backend(String)`. The field is
+/// called `reason` (not `message`) because UniFFI-generated Kotlin classes
+/// extend `Throwable`; a `val message: String` would shadow `Throwable.message`
+/// and Kotlin rejects the override with a compile error.
 #[derive(Debug, Error)]
 pub enum StorageError {
-    #[error("secure store backend error: {message}")]
-    Backend { message: String },
+    #[error("secure store backend error: {reason}")]
+    Backend { reason: String },
 }
 
 impl From<StorageError> for XboardError {
     fn from(err: StorageError) -> Self {
         match err {
-            StorageError::Backend { message } => {
-                XboardError::Config(format!("secure store: {message}"))
+            StorageError::Backend { reason } => {
+                XboardError::Config(format!("secure store: {reason}"))
             }
         }
     }
@@ -123,13 +126,14 @@ impl From<StorageError> for XboardError {
 /// iOS NEVPNManager auth) — the kernel manager downgrades to SystemProxy on
 /// platforms where that's available, otherwise propagates as a hard error.
 ///
-/// Same struct-style-variant rationale as `StorageError` above.
+/// Same `reason`-not-`message` rationale as `StorageError` above (Throwable
+/// shadowing).
 #[derive(Debug, Error)]
 pub enum TunnelError {
-    #[error("tun delegate denied: {message}")]
-    Denied { message: String },
-    #[error("tun delegate backend error: {message}")]
-    Backend { message: String },
+    #[error("tun delegate denied: {reason}")]
+    Denied { reason: String },
+    #[error("tun delegate backend error: {reason}")]
+    Backend { reason: String },
 }
 
 impl From<TunnelError> for XboardError {

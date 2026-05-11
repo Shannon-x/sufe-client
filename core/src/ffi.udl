@@ -69,7 +69,7 @@ enum FfiError {
 /// message across the FFI.
 [Error]
 interface StorageError {
-    Backend(string message);
+    Backend(string reason);
 };
 
 /// Errors a `TunDelegate` callback may raise during `establish_tun`. The
@@ -78,8 +78,8 @@ interface StorageError {
 /// Same rich-mode rationale as `StorageError` above.
 [Error]
 interface TunnelError {
-    Denied(string message);
-    Backend(string message);
+    Denied(string reason);
+    Backend(string reason);
 };
 
 // ---------------------------------------------------------------------- //

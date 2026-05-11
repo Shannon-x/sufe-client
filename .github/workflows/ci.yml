@@ -94,17 +94,22 @@ jobs:
         run: npm ci --no-audit --fund=false
 
       # `tauri-build` build script verifies all `externalBin` entries exist
-      # before any rustc runs, so we need the linux mihomo binary on disk
-      # even for a clippy-only pass.
+      # and that the `frontendDist` (../dist) directory exists before any
+      # rustc runs, so we need the linux mihomo binary on disk AND a built
+      # Vite output dir even for a clippy-only pass.
       - name: Fetch mihomo Linux sidecar
         env:
           MIHOMO_VERSION: ${{ vars.MIHOMO_VERSION || 'v1.18.7' }}
         run: bash ci/scripts/install-mihomo-sidecar.sh "${MIHOMO_VERSION}"
 
-      - name: vue-tsc + clippy
-        run: |
-          cargo clippy -p xboard-desktop --all-targets -- -D warnings
-          (cd desktop && ./node_modules/.bin/vue-tsc --noEmit)
+      # `npm run build` is `vue-tsc --noEmit && vite build` so it doubles as
+      # the type-check pass for the Vue surface.
+      - name: Build Vite frontend (also acts as vue-tsc gate)
+        working-directory: desktop
+        run: npm run build
+
+      - name: cargo clippy (xboard-desktop)
+        run: cargo clippy -p xboard-desktop --all-targets -- -D warnings
 
   # ---------- Android (lint + detekt + assembleDebug smoke) ----------
   android:

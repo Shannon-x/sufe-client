@@ -33,7 +33,7 @@ final class KeychainSecureStore: SecureStore {
 
     func put(key: String, value: String) throws {
         guard let data = value.data(using: .utf8) else {
-            throw StorageError.Backend(message: "value not UTF-8")
+            throw StorageError.Backend(reason: "value not UTF-8")
         }
         var query = baseQuery(key)
         // Try update first, then add — avoids a "duplicate item" race when
@@ -47,10 +47,10 @@ final class KeychainSecureStore: SecureStore {
             query[kSecValueData as String] = data
             let addStatus = SecItemAdd(query as CFDictionary, nil)
             if addStatus != errSecSuccess {
-                throw StorageError.Backend(message: "SecItemAdd \(addStatus)")
+                throw StorageError.Backend(reason: "SecItemAdd \(addStatus)")
             }
         default:
-            throw StorageError.Backend(message: "SecItemUpdate \(status)")
+            throw StorageError.Backend(reason: "SecItemUpdate \(status)")
         }
     }
 
@@ -64,13 +64,13 @@ final class KeychainSecureStore: SecureStore {
         switch status {
         case errSecSuccess:
             guard let data = item as? Data, let s = String(data: data, encoding: .utf8) else {
-                throw StorageError.Backend(message: "Keychain returned non-UTF8 blob")
+                throw StorageError.Backend(reason: "Keychain returned non-UTF8 blob")
             }
             return s
         case errSecItemNotFound:
             return nil
         default:
-            throw StorageError.Backend(message: "SecItemCopyMatching \(status)")
+            throw StorageError.Backend(reason: "SecItemCopyMatching \(status)")
         }
     }
 
@@ -78,7 +78,7 @@ final class KeychainSecureStore: SecureStore {
         let query = baseQuery(key)
         let status = SecItemDelete(query as CFDictionary)
         if status != errSecSuccess && status != errSecItemNotFound {
-            throw StorageError.Backend(message: "SecItemDelete \(status)")
+            throw StorageError.Backend(reason: "SecItemDelete \(status)")
         }
     }
 }
