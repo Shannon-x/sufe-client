@@ -372,7 +372,10 @@ private fun WorldMapCanvas(pins: List<MapPin>, modifier: Modifier = Modifier) {
                     Paint().apply {
                         isAntiAlias = true
                         textSize = 22.dp.toPx()
-                        color = android.graphics.Color.WHITE
+                        // Qualify with `this`: the enclosing forEach defines a
+                        // local `val color: Color` (Compose) that otherwise
+                        // shadows android.graphics.Paint.color here.
+                        this.color = android.graphics.Color.WHITE
                     },
                 )
             }

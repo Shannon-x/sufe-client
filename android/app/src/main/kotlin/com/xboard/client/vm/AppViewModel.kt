@@ -185,7 +185,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendEmailCode(email: String, onDone: () -> Unit) {
         viewModelScope.launch {
-            runCatching { client.sendEmailVerify(email.trim()) }
+            runCatching { client.sendEmailVerify(email.trim(), null) }
                 .onSuccess { onDone() }
                 .onFailure { snackbar(it.userMessage()) }
         }
