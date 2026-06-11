@@ -16,9 +16,10 @@
 
 use crate::api::{AuthResult as ApiAuthResult, CheckoutResponse as ApiCheckoutResponse};
 use crate::api::{
-    Notice as ApiNotice, Order as ApiOrder, PaymentMethod as ApiPaymentMethod, Plan as ApiPlan,
-    SiteConfig as ApiSiteConfig, SubscribeInfo as ApiSubscribeInfo, Ticket as ApiTicket,
-    TicketDetail as ApiTicketDetail, TicketMessage as ApiTicketMessage, UserInfo as ApiUserInfo,
+    CouponCheckResult as ApiCouponCheckResult, Notice as ApiNotice, Order as ApiOrder,
+    PaymentMethod as ApiPaymentMethod, Plan as ApiPlan, SiteConfig as ApiSiteConfig,
+    SubscribeInfo as ApiSubscribeInfo, Ticket as ApiTicket, TicketDetail as ApiTicketDetail,
+    TicketMessage as ApiTicketMessage, UserInfo as ApiUserInfo,
 };
 use crate::kernel::driver::{ProxyGroup as KernelProxyGroup, TrafficStats as KernelTrafficStats};
 use crate::kernel::manager::{
@@ -88,7 +89,8 @@ pub struct SiteConfig {
     pub captcha_type: String,
     pub recaptcha_site_key: String,
     pub recaptcha_v3_site_key: String,
-    pub recaptcha_v3_score_threshold: f32,
+    /// `None` ⇒ use reCAPTCHA-recommended default. See API-side doc.
+    pub recaptcha_v3_score_threshold: Option<f32>,
     pub turnstile_site_key: String,
     pub is_recaptcha: bool,
     pub app_description: String,
@@ -155,7 +157,8 @@ pub struct SubscribeInfo {
     pub download: u64,
     pub transfer_enable: u64,
     pub subscribe_url: String,
-    pub reset_day: Option<u8>,
+    /// Widened to `u16` to cover yearly-reset plans (~366 days legitimate).
+    pub reset_day: Option<u16>,
 }
 
 impl From<ApiSubscribeInfo> for SubscribeInfo {
@@ -307,6 +310,28 @@ pub struct SaveOrderArgs {
     pub plan_id: i64,
     pub period: String,
     pub coupon_code: Option<String>,
+}
+
+/// FFI mirror of `api::CouponCheckResult`. `kind` matches the upstream
+/// `type` discriminator (1 = fixed-cents, 2 = percent); see the API-side
+/// doc-comment for `value` semantics.
+#[derive(Debug, Clone)]
+pub struct CouponCheckResult {
+    pub id: i64,
+    pub code: String,
+    pub kind: i32,
+    pub value: Option<i64>,
+}
+
+impl From<ApiCouponCheckResult> for CouponCheckResult {
+    fn from(c: ApiCouponCheckResult) -> Self {
+        Self {
+            id: c.id,
+            code: c.code,
+            kind: c.r#type,
+            value: c.value,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

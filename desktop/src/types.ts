@@ -66,7 +66,10 @@ export interface SiteConfig {
   captcha_type: CaptchaType;
   recaptcha_site_key: string;
   recaptcha_v3_site_key: string;
-  recaptcha_v3_score_threshold: number;
+  // `null` ⇒ use reCAPTCHA-recommended default. The Rust core widens this
+  // to `Option<f32>` because admins can store non-numeric junk in the
+  // backing `admin_setting` row, which is unparseable.
+  recaptcha_v3_score_threshold: number | null;
   turnstile_site_key: string;
   is_recaptcha: boolean;
   app_description: string;
@@ -102,6 +105,48 @@ export interface TrafficStats {
   down: number;
   up_total: number;
   down_total: number;
+}
+
+// Mirrors `xboard_core::kernel::ConnectionItem` — one active connection from
+// the kernel's `/connections`, flattened for the Connections monitor table.
+export interface ConnectionItem {
+  id: string;
+  upload: number;
+  download: number;
+  start: string;
+  chains: string[];
+  rule: string;
+  rule_payload: string;
+  network: string;
+  conn_type: string;
+  host: string;
+  source_ip: string;
+  destination_ip: string;
+  destination_port: string;
+  process: string;
+}
+
+// Mirrors `xboard_core::kernel::RuleItem`.
+export interface RuleItem {
+  type: string;
+  payload: string;
+  proxy: string;
+}
+
+// Mirrors `xboard_core::kernel::LogLine`, streamed over `connection://log`.
+export interface LogLine {
+  level: string;
+  message: string;
+  at: string;
+}
+
+// Mirrors `commands::nodes::NodePreview` — the subscribe-only view used by
+// the sidebar before any kernel is running.
+export interface NodePreview {
+  name: string;
+  kind: string;
+  server: string;
+  port: number;
 }
 
 // Mirrors `xboard_core::kernel::ProxyGroup`. The backend renames `kind` to
@@ -228,6 +273,18 @@ export interface PaymentMethod {
 export interface CheckoutResponse {
   type: number;
   data: unknown;
+}
+
+// Mirror of `xboard_core::api::CouponCheckResult`. Returned by
+// `api.checkCoupon(code, planId)` after a successful panel validation —
+// invalid / expired / wrong-plan codes throw `CommandError` instead.
+//   type === 1 → fixed amount off; `value` is cents.
+//   type === 2 → percent off;       `value` is an integer in 0..=100.
+export interface CouponCheckResult {
+  id: number;
+  code: string;
+  type: number;
+  value: number | null;
 }
 
 // Mirror of `xboard_core::api::Order`. `status` semantics:

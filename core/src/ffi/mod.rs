@@ -33,8 +33,8 @@ pub use manager::ConnectionManager;
 pub use observer::{StateObserver, TunDelegate};
 pub use secure::SecureStore;
 pub use types::{
-    CheckoutResponse, ConnectStage, ConnectionState, ForgetPasswordArgs, LoginArgs, LoginSummary,
-    Notice, Order, PaymentMethod, Plan, ProxyGroup, RegisterArgs, SaveOrderArgs, SaveTicketArgs,
-    SiteConfig, SubscribeInfo, Ticket, TicketDetail, TicketMessage, TrafficStats, TunConfig,
-    TunnelMode, UserInfo,
+    CheckoutResponse, ConnectStage, ConnectionState, CouponCheckResult, ForgetPasswordArgs,
+    LoginArgs, LoginSummary, Notice, Order, PaymentMethod, Plan, ProxyGroup, RegisterArgs,
+    SaveOrderArgs, SaveTicketArgs, SiteConfig, SubscribeInfo, Ticket, TicketDetail, TicketMessage,
+    TrafficStats, TunConfig, TunnelMode, UserInfo,
 };

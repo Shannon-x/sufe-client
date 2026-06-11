@@ -32,7 +32,39 @@ use std::time::Duration;
 use async_trait::async_trait;
 use parking_lot::Mutex;
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use tokio::process::{Child, Command};
+use tokio::sync::broadcast;
+
+/// Capacity for the launcher's failure broadcast channel. A handful of
+/// subscribers is the realistic maximum (UI re-emitter + supervisor task);
+/// 8 keeps memory tiny while leaving room for slow consumers.
+const FAILURE_CHANNEL_CAPACITY: usize = 8;
+
+/// One-shot signal from the launcher when something unexpected happens to
+/// the kernel subprocess. Today the only producer is [`DirectLauncher`]
+/// (which actually owns the [`Child`]); privileged launchers (svc/helper)
+/// rely on the manager's heartbeat path to detect a dead kernel.
+///
+/// The wire-format is stable so the Tauri shell can forward it straight to
+/// the JS side under `connection://kernel-failure`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum KernelFailure {
+    /// `Child::wait` returned: mihomo died on its own. Carries the OS exit
+    /// status (None if the process was killed by an unhandled signal) plus
+    /// the last few KiB of the kernel log file when available — useful for
+    /// the UI's "View logs" affordance.
+    Exited {
+        exit_code: Option<i32>,
+        log_tail: Option<String>,
+    },
+    /// The manager's `/version` heartbeat / traffic poller failed enough
+    /// times in a row that we consider the kernel hung even if the process
+    /// is still alive. Emitted *only* by the supervisor in
+    /// [`super::manager::KernelManager`] — launchers don't drive it.
+    Unresponsive { reason: String },
+}
 
 /// Outcome of [`KernelLauncher::ensure_privileged`] / [`KernelLauncher::spawn`].
 /// The manager turns `NeedsConsent` / `ServiceMissing` / `NotPermitted` /
@@ -145,6 +177,14 @@ pub trait KernelLauncher: Send + Sync + Debug {
 
     /// Human-readable name for logs (`direct`, `svc-pipe`, `helper-socket`).
     fn name(&self) -> &'static str;
+
+    /// Subscribe to crash / unresponsiveness events surfaced by this
+    /// launcher. The default impl returns `None` for privileged launchers
+    /// that don't own the kernel `Child` and therefore can't observe an
+    /// exit cheaply; those rely on the manager's heartbeat path instead.
+    fn failure_stream(&self) -> Option<broadcast::Receiver<KernelFailure>> {
+        None
+    }
 }
 
 /// Phase-1 launcher: spawn the kernel directly from this process. Works
@@ -154,14 +194,39 @@ pub trait KernelLauncher: Send + Sync + Debug {
 /// will fall back to SystemProxy mode (no TUN device needed).
 #[derive(Debug)]
 pub struct DirectLauncher {
-    /// At most one mihomo per launcher instance; new spawns wait for the
-    /// previous one to be `stop`-ed first.
+    /// Pre-handoff slot for the freshly-spawned mihomo `Child`. After
+    /// `spawn()` confirms the External Controller is up, the `Child` is
+    /// taken out of here and handed to the exit watcher task — from that
+    /// point on, the watcher owns the process handle, and `stop()`
+    /// communicates with the watcher via [`Self::stop_signal`].
+    /// Always `None` once a spawn has settled.
     child: Mutex<Option<Child>>,
     /// Path to the kernel binary, used by the Linux capability probe in
     /// `ensure_privileged`. Optional because non-Linux hosts don't need it
     /// and tests construct the launcher without one. Set via
     /// [`DirectLauncher::with_binary_hint`].
     binary_hint: Option<PathBuf>,
+    /// Fan-out channel for [`KernelFailure::Exited`] events. The watcher
+    /// task spawned in `spawn` sends here when `child.wait()` returns; the
+    /// manager subscribes via `failure_stream()`. Held permanently so
+    /// subscribers added between spawn cycles keep working.
+    failures: broadcast::Sender<KernelFailure>,
+    /// Path of the log file we wrote for the *current* spawn. Read on
+    /// unexpected exit to attach a tail to the `KernelFailure::Exited`
+    /// event. `None` between spawns / on platforms that route through a
+    /// privileged launcher.
+    last_log_path: Mutex<Option<PathBuf>>,
+    /// Set to `true` by [`DirectLauncher::stop`] just before we tell the
+    /// watcher to kill the child. The watcher reads it and suppresses the
+    /// `Exited` broadcast so we don't fire spurious "kernel died" toasts
+    /// on every disconnect.
+    expecting_stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// One-shot-per-spawn notifier the watcher selects on. `stop()`
+    /// notifies, the watcher reacts by `kill()` + `wait()`. Held in a
+    /// Mutex<Option<_>> because a brand-new Notify is installed for each
+    /// spawn so a previous lifetime's pending notify can't leak into the
+    /// next one.
+    stop_signal: Mutex<Option<std::sync::Arc<tokio::sync::Notify>>>,
 }
 
 impl Default for DirectLauncher {
@@ -172,9 +237,14 @@ impl Default for DirectLauncher {
 
 impl DirectLauncher {
     pub fn new() -> Self {
+        let (failures, _) = broadcast::channel(FAILURE_CHANNEL_CAPACITY);
         Self {
             child: Mutex::new(None),
             binary_hint: None,
+            failures,
+            last_log_path: Mutex::new(None),
+            expecting_stop: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            stop_signal: Mutex::new(None),
         }
     }
 
@@ -273,25 +343,59 @@ impl KernelLauncher for DirectLauncher {
         let child = cmd.spawn()?;
         let pid = child.id().unwrap_or(0);
         *self.child.lock() = Some(child);
+        *self.last_log_path.lock() = Some(spec.log_path.clone());
+        // Reset the stop-suppression flag for the *new* lifetime; if a
+        // previous disconnect raced the spawn we don't want to swallow the
+        // first real crash.
+        self.expecting_stop
+            .store(false, std::sync::atomic::Ordering::SeqCst);
 
         match wait_for_controller(&spec.controller_addr, &spec.controller_secret).await {
-            Ok(()) => Ok(LaunchHandle::Local { pid }),
+            Ok(()) => {
+                // Hand off the live `Child` to a watcher task. The watcher
+                // owns the handle from here on so it can `wait()` to
+                // completion. `stop()` talks to it via the per-spawn
+                // `Notify`; suppression of the "crashed" event is gated
+                // on `expecting_stop`.
+                let taken = self.child.lock().take();
+                if let Some(child) = taken {
+                    let notify = std::sync::Arc::new(tokio::sync::Notify::new());
+                    *self.stop_signal.lock() = Some(notify.clone());
+                    self.spawn_exit_watcher(child, spec.log_path.clone(), notify);
+                }
+                Ok(LaunchHandle::Local { pid })
+            }
             Err(e) => {
                 let taken = self.child.lock().take();
                 if let Some(mut c) = taken {
                     let _ = c.kill().await;
                     let _ = c.wait().await;
                 }
+                *self.last_log_path.lock() = None;
                 Err(e)
             }
         }
     }
 
     async fn stop(&self, _handle: LaunchHandle) -> Result<(), LauncherError> {
-        let taken = self.child.lock().take();
-        if let Some(mut c) = taken {
-            let _ = c.kill().await;
-            let _ = c.wait().await;
+        // Tell the watcher this is an intentional shutdown so it stays
+        // quiet when `child.wait()` returns. We set the flag *before*
+        // notifying so the watcher's branch race-free observes it.
+        self.expecting_stop
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let notify = self.stop_signal.lock().take();
+        if let Some(notify) = notify {
+            // Wake the watcher; it owns the child and will kill+wait.
+            notify.notify_one();
+        } else {
+            // No watcher (e.g. spawn rolled back) — fall back to the
+            // legacy path of killing whatever the pre-handoff slot
+            // happens to hold. Almost always None.
+            let taken = self.child.lock().take();
+            if let Some(mut c) = taken {
+                let _ = c.kill().await;
+                let _ = c.wait().await;
+            }
         }
         Ok(())
     }
@@ -299,6 +403,78 @@ impl KernelLauncher for DirectLauncher {
     fn name(&self) -> &'static str {
         "direct"
     }
+
+    fn failure_stream(&self) -> Option<broadcast::Receiver<KernelFailure>> {
+        Some(self.failures.subscribe())
+    }
+}
+
+impl DirectLauncher {
+    /// Move `child` into a tokio task and wait for it. The watcher races
+    /// `child.wait()` against `stop_signal.notified()`:
+    ///   * `child.wait()` wins → mihomo died on its own. Broadcast a
+    ///     `KernelFailure::Exited` (unless `expecting_stop` is set, which
+    ///     means `stop()` notified us a moment before the child died
+    ///     anyway).
+    ///   * `stop_signal` wins → user / manager asked us to shut down. Kill
+    ///     and wait the child, stay silent on the broadcast channel.
+    fn spawn_exit_watcher(
+        &self,
+        mut child: Child,
+        log_path: PathBuf,
+        stop_signal: std::sync::Arc<tokio::sync::Notify>,
+    ) {
+        let tx = self.failures.clone();
+        let flag = self.expecting_stop.clone();
+        tokio::spawn(async move {
+            let stop_fut = stop_signal.notified();
+            tokio::pin!(stop_fut);
+            tokio::select! {
+                status = child.wait() => {
+                    if flag.load(std::sync::atomic::Ordering::SeqCst) {
+                        // stop() got there nanoseconds before the child
+                        // happened to exit (rare). Stay silent and reset
+                        // the flag for the next spawn cycle.
+                        flag.store(false, std::sync::atomic::Ordering::SeqCst);
+                        return;
+                    }
+                    let exit_code = status.ok().and_then(|s| s.code());
+                    let log_tail = tail_log_file(&log_path).await;
+                    let _ = tx.send(KernelFailure::Exited { exit_code, log_tail });
+                }
+                _ = &mut stop_fut => {
+                    // Intentional shutdown: kill, wait, stay silent.
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    flag.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+        });
+    }
+}
+
+/// Read the trailing ~8 KiB of a (UTF-8-ish) log file and return it as a
+/// String. Used to attach context to a `KernelFailure::Exited` event so
+/// the UI can render "View logs" without a separate roundtrip.
+async fn tail_log_file(path: &std::path::Path) -> Option<String> {
+    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+    const MAX: u64 = 8 * 1024;
+    let meta = tokio::fs::metadata(path).await.ok()?;
+    let len = meta.len();
+    let start = len.saturating_sub(MAX);
+    let mut file = tokio::fs::File::open(path).await.ok()?;
+    if start > 0 {
+        file.seek(std::io::SeekFrom::Start(start)).await.ok()?;
+    }
+    let mut buf = Vec::with_capacity((len - start).min(MAX) as usize);
+    file.read_to_end(&mut buf).await.ok()?;
+    let text = String::from_utf8_lossy(&buf).into_owned();
+    if start > 0 {
+        if let Some(idx) = text.find('\n') {
+            return Some(text[idx + 1..].to_string());
+        }
+    }
+    Some(text)
 }
 
 /// Poll the External Controller's `/version` endpoint until it responds OK
@@ -807,5 +983,90 @@ pub mod linux_caps {
             // ENOENT path — the probe must report false rather than panic.
             assert!(!has_file_capability(Path::new("/nonexistent/xboard-test")));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    use tokio::process::Command as TokioCommand;
+
+    /// Build a launcher with the given `expecting_stop` flag and return
+    /// a fresh failure-channel receiver. Tests then drive `spawn_exit_watcher`
+    /// against a short-lived child process (`sleep`) without going through
+    /// the full kernel-spawn flow.
+    fn direct_launcher_with_flag(
+        flag: Arc<AtomicBool>,
+    ) -> (DirectLauncher, broadcast::Receiver<KernelFailure>) {
+        let l = DirectLauncher {
+            child: Mutex::new(None),
+            binary_hint: None,
+            failures: broadcast::channel(FAILURE_CHANNEL_CAPACITY).0,
+            last_log_path: Mutex::new(None),
+            expecting_stop: flag,
+            stop_signal: Mutex::new(None),
+        };
+        let rx = l.failures.subscribe();
+        (l, rx)
+    }
+
+    #[tokio::test]
+    async fn watcher_broadcasts_exit_when_unexpected() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let (launcher, mut rx) = direct_launcher_with_flag(flag);
+        // `true` exits immediately with status 0 — the watcher's
+        // `child.wait()` arm fires before `stop_signal.notified()` ever
+        // wakes, so we expect a `KernelFailure::Exited` broadcast.
+        let child = TokioCommand::new("true")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn /usr/bin/true");
+        let signal = std::sync::Arc::new(tokio::sync::Notify::new());
+        launcher.spawn_exit_watcher(child, PathBuf::from("/nonexistent.log"), signal);
+        let evt = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("watcher should fire within 2s")
+            .expect("broadcast channel open");
+        match evt {
+            KernelFailure::Exited { exit_code, .. } => assert_eq!(exit_code, Some(0)),
+            other => panic!("expected Exited, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn watcher_kills_and_stays_silent_on_stop_signal() {
+        let flag = Arc::new(AtomicBool::new(false));
+        let (launcher, mut rx) = direct_launcher_with_flag(flag.clone());
+        // Long-lived child: `sleep 5` would last well past the test's
+        // timeout. The watcher must `kill` it when the stop signal fires
+        // and emit nothing on the broadcast channel.
+        let child = TokioCommand::new("sleep")
+            .arg("5")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn sleep");
+        let signal = std::sync::Arc::new(tokio::sync::Notify::new());
+        // Set expecting_stop, fire the notify, then verify silence.
+        flag.store(true, Ordering::SeqCst);
+        launcher.spawn_exit_watcher(child, PathBuf::from("/nonexistent.log"), signal.clone());
+        signal.notify_one();
+        let outcome = tokio::time::timeout(Duration::from_millis(500), rx.recv()).await;
+        assert!(
+            outcome.is_err(),
+            "watcher should stay silent on stop_signal; got {outcome:?}"
+        );
+        // Flag should have been reset for the next spawn cycle.
+        assert!(
+            !flag.load(Ordering::SeqCst),
+            "flag must reset after intentional stop"
+        );
     }
 }

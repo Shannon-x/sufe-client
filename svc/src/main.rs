@@ -505,6 +505,15 @@ mod imp {
         log_path: &Path,
     ) -> anyhow::Result<u32> {
         let canonical = validate_exec_path(exec_path)?;
+        // The per-connection SID check already restricts callers to the
+        // install user, but still pin the data paths so a compromised UI (or
+        // the install user themselves) can't have LocalSystem create_dir_all /
+        // append to arbitrary locations (e.g. C:\Windows\System32\...) — a
+        // service-to-SYSTEM escalation. Config / work-dir / log must live in
+        // the user's own AppData bundle dir.
+        validate_data_path(work_dir)?;
+        validate_data_path(cfg_path)?;
+        validate_data_path(log_path)?;
         state.kill_kernel().await;
         tokio::fs::create_dir_all(work_dir).await?;
         if let Some(parent) = log_path.parent() {
@@ -604,6 +613,71 @@ mod imp {
             .and_then(|n| n.to_str())
             .map(|n| ALLOWED.iter().any(|a| a.eq_ignore_ascii_case(n)))
             .unwrap_or(false)
+    }
+
+    /// Lexical allow-list for the kernel's data paths (work-dir / config /
+    /// log). Tauri's `app_data_dir()` on Windows is
+    /// `%APPDATA%\com.xboard.client.desktop` (Roaming); we also accept the
+    /// Local variant. Anchored to `<drive>:\users\<user>\appdata\...` so a
+    /// crafted path can't smuggle the segment in mid-string.
+    fn is_under_allowed_data_root(p: &Path) -> bool {
+        let mut s = p.to_string_lossy().to_lowercase().replace('/', "\\");
+        if let Some(stripped) = s.strip_prefix(r"\\?\") {
+            s = stripped.to_string();
+        }
+        let after_users = match s.split_once(r"\users\") {
+            Some((drive, rest)) if drive.len() == 2 && drive.ends_with(':') => rest,
+            _ => return false,
+        };
+        let tail = match after_users.split_once('\\') {
+            Some((_user, tail)) => tail,
+            None => return false,
+        };
+        tail.starts_with(r"appdata\roaming\com.xboard.client.desktop\")
+            || tail.starts_with(r"appdata\local\com.xboard.client.desktop\")
+    }
+
+    /// Pin work-dir / config / log to the user's own AppData bundle dir:
+    /// absolute, no `.`/`..`, lexically under the allowed root, and (for
+    /// already-existing paths / ancestors) symlink-resolved still under it.
+    fn validate_data_path(p: &Path) -> anyhow::Result<()> {
+        use std::path::Component;
+        if !p.is_absolute() {
+            anyhow::bail!("data path must be absolute, got {}", p.display());
+        }
+        for comp in p.components() {
+            if matches!(comp, Component::ParentDir | Component::CurDir) {
+                anyhow::bail!("data path must not contain '.' or '..': {}", p.display());
+            }
+        }
+        if !is_under_allowed_data_root(p) {
+            anyhow::bail!(
+                "data path {} is not under the per-user AppData bundle dir",
+                p.display()
+            );
+        }
+        // Resolve symlinks/junctions on the nearest existing ancestor and
+        // re-check, so a reparse point can't redirect us outside the root.
+        let mut existing = p;
+        let canon = loop {
+            if existing.exists() {
+                break existing
+                    .canonicalize()
+                    .map_err(|e| anyhow::anyhow!("canonicalize {}: {e}", existing.display()))?;
+            }
+            match existing.parent() {
+                Some(parent) => existing = parent,
+                None => anyhow::bail!("no existing ancestor for {}", p.display()),
+            }
+        };
+        if !is_under_allowed_data_root(&canon) {
+            anyhow::bail!(
+                "data path {} resolves outside the allowed root (reparse point?): {}",
+                p.display(),
+                canon.display()
+            );
+        }
+        Ok(())
     }
 
     // ----- SID helpers --------------------------------------------------------

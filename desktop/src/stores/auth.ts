@@ -35,9 +35,12 @@ export const useAuthStore = defineStore("auth", () => {
       const restored = await api.hydrateSession();
       if (restored) {
         session.value = restored;
-        // Fire-and-forget revalidation; if the bearer is dead the backend
-        // will emit `session-expired`, which our listener handles.
-        const ok = await api.checkLogin().catch(() => true);
+        // Revalidate the restored session. If the bearer is dead the
+        // backend will emit `session-expired`, which our listener handles.
+        // On IPC failure we default to `false` (logged out) so the router
+        // guard kicks the user back to /login instead of stranding them
+        // on a broken Home with stale state.
+        const ok = await api.checkLogin().catch(() => false);
         if (!ok) {
           session.value = null;
         } else {
@@ -55,8 +58,8 @@ export const useAuthStore = defineStore("auth", () => {
   async function login(args: {
     email: string;
     password: string;
-    turnstile?: string;
-    recaptcha?: string;
+    captchaType?: string;
+    captchaToken?: string;
   }) {
     const summary = await api.login(args);
     session.value = summary;
@@ -69,8 +72,8 @@ export const useAuthStore = defineStore("auth", () => {
     password: string;
     emailCode: string;
     inviteCode?: string;
-    turnstile?: string;
-    recaptcha?: string;
+    captchaType?: string;
+    captchaToken?: string;
   }) {
     const summary = await api.register(args);
     session.value = summary;

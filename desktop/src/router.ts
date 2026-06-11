@@ -30,6 +30,30 @@ export const router = createRouter({
       meta: { requiresAuth: true },
     },
     {
+      path: "/connections",
+      name: "connections",
+      component: () => import("@/pages/Connections.vue"),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: "/logs",
+      name: "logs",
+      component: () => import("@/pages/Logs.vue"),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: "/rules",
+      name: "rules",
+      component: () => import("@/pages/Rules.vue"),
+      meta: { requiresAuth: true },
+    },
+    {
+      path: "/settings",
+      name: "settings",
+      component: () => import("@/pages/Settings.vue"),
+      meta: { requiresAuth: true },
+    },
+    {
       path: "/notices",
       name: "notices",
       component: () => import("@/pages/Notices.vue"),

@@ -9,7 +9,7 @@ use reqwest::header::IF_NONE_MATCH;
 use url::Url;
 
 use super::HttpClient;
-use crate::error::Result;
+use crate::error::{Result, XboardError};
 
 #[derive(Debug, Clone)]
 pub struct SubscribeFetch {
@@ -39,6 +39,16 @@ impl HttpClient {
         }
         let resp = req.send().await?;
         let status = resp.status().as_u16();
+        // 304 (not modified) is a valid "use your cache" answer. Anything
+        // >= 400 means the backend refused to hand out a subscription —
+        // almost always a 403 for an expired / suspended / out-of-traffic
+        // account. Surface it as a distinct error so callers never write an
+        // empty body to the on-disk cache and never spin up the kernel over
+        // an empty config (which used to manifest as a fake "connected"
+        // state with no working egress).
+        if status >= 400 {
+            return Err(XboardError::SubscriptionUnavailable { status });
+        }
         let etag = resp
             .headers()
             .get("etag")

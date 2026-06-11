@@ -29,6 +29,15 @@ pub enum XboardError {
     #[error("unauthorized — re-login required")]
     Unauthorized,
 
+    /// The subscription endpoint returned a 4xx (typically 403) or an empty
+    /// body. The bearer is still valid — the account simply has no usable
+    /// subscription (plan expired, traffic exhausted, account suspended).
+    /// Distinct from [`XboardError::Unauthorized`] so the UI can prompt a
+    /// renewal instead of forcing a re-login, and so the connect path fails
+    /// loudly instead of faking a "connected" state over an empty config.
+    #[error("subscription unavailable (HTTP {status})")]
+    SubscriptionUnavailable { status: u16 },
+
     #[error("kernel not running")]
     KernelNotRunning,
 

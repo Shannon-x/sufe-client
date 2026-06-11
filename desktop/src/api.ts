@@ -1,12 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   CheckoutResponse,
+  ConnectionItem,
   ConnectionState,
+  CouponCheckResult,
+  RuleItem,
   HelperStatus,
   KernelHealth,
   KernelVersion,
   LoginSummary,
   NodeGeo,
+  NodePreview,
   Notice,
   Order,
   PaymentMethod,
@@ -25,11 +29,15 @@ export const api = {
   appVersion: () => invoke<string>("app_version"),
   coreVersion: () => invoke<string>("core_version"),
 
+  // `captchaType` is the provider tag from guest/comm/config.captcha_type
+  // ("turnstile" | "recaptcha" | "recaptcha-v3"); the Rust side routes
+  // `captchaToken` into the exact field the panel's CaptchaService reads
+  // (turnstile_token / recaptcha_v3_token / recaptcha_data).
   login: (args: {
     email: string;
     password: string;
-    turnstile?: string;
-    recaptcha?: string;
+    captchaType?: string;
+    captchaToken?: string;
   }) => invoke<LoginSummary>("login", args),
 
   register: (args: {
@@ -37,19 +45,21 @@ export const api = {
     password: string;
     emailCode: string;
     inviteCode?: string;
-    turnstile?: string;
-    recaptcha?: string;
+    captchaType?: string;
+    captchaToken?: string;
   }) => invoke<LoginSummary>("register", args),
 
-  sendEmailVerify: (email: string) =>
-    invoke<void>("send_email_verify", { email }),
+  // sendEmailVerify is captcha-gated on the backend (register / forget).
+  // Pass the provider tag + resolved token so the panel validates it.
+  sendEmailVerify: (email: string, captchaType?: string, captchaToken?: string) =>
+    invoke<void>("send_email_verify", { email, captchaType, captchaToken }),
 
   forgetPassword: (args: {
     email: string;
     password: string;
     emailCode: string;
-    turnstile?: string;
-    recaptcha?: string;
+    captchaType?: string;
+    captchaToken?: string;
   }) => invoke<void>("forget_password", args),
 
   // Returns null when no snapshot exists or the backend pointer changed.
@@ -82,6 +92,22 @@ export const api = {
   resolveNodeGeoBatch: () =>
     invoke<Record<string, NodeGeo>>("resolve_node_geo_batch"),
   currentTraffic: () => invoke<TrafficStats>("current_traffic"),
+  // Observability (Connections / Rules pages).
+  connections: () => invoke<ConnectionItem[]>("connections"),
+  closeConnection: (id: string) => invoke<void>("close_connection", { id }),
+  closeAllConnections: () => invoke<void>("close_all_connections"),
+  rules: () => invoke<RuleItem[]>("rules"),
+  // Reliability.
+  reconnect: () => invoke<ConnectionState>("reconnect"),
+  setProxyGuardEnabled: (enabled: boolean) =>
+    invoke<void>("set_proxy_guard_enabled", { enabled }),
+  proxyGuardEnabled: () => invoke<boolean>("proxy_guard_enabled"),
+  /// Pulls + parses the Clash YAML directly from the user's subscribe URL,
+  /// returning `{ name, kind, server, port }` for every entry. No kernel
+  /// touched — used to populate the country/node sidebar before the user
+  /// has ever pressed "connect".
+  previewSubscribeNodes: () =>
+    invoke<NodePreview[]>("preview_subscribe_nodes"),
 
   // Read-only diagnostics — neither call spawns mihomo.
   kernelHealth: () => invoke<KernelHealth>("kernel_health"),
@@ -121,6 +147,11 @@ export const api = {
     invoke<CheckoutResponse>("checkout_order", { tradeNo, method }),
   // Returns the raw `status` integer (0 pending, 1 activating, 3 completed…).
   checkOrder: (tradeNo: string) => invoke<number>("check_order", { tradeNo }),
+  // Validates a coupon against a plan. Throws on invalid/expired/wrong-plan
+  // codes — the UI should catch and surface the message inline rather than
+  // toasting. `value` semantics depend on `type`: 1 = cents off, 2 = percent.
+  checkCoupon: (code: string, planId: number) =>
+    invoke<CouponCheckResult>("check_coupon", { code, planId }),
   cancelOrder: (tradeNo: string) => invoke<void>("cancel_order", { tradeNo }),
 
   // Tickets — read for free, reply / close are gated on `status === 0`.

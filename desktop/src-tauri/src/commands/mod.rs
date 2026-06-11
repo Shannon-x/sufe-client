@@ -11,6 +11,7 @@ pub mod guest;
 pub mod helper;
 pub mod kernel;
 pub mod meta;
+pub mod nodes;
 pub mod notice;
 pub mod session;
 pub mod ticket;

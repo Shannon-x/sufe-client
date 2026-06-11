@@ -197,6 +197,14 @@ async function execute(action = "submit"): Promise<string | undefined> {
   return currentToken.value ?? undefined;
 }
 
+// `resolve` is the symmetric, action-agnostic entrypoint callers use when
+// they just want "whatever token is appropriate for this submission" —
+// e.g. the email-verify request, which doesn't carry semantic action labels.
+// For v3 we still need an action string for analytics; "submit" is fine.
+function resolve(action = "submit"): Promise<string | undefined> {
+  return execute(action);
+}
+
 function reset() {
   currentToken.value = null;
   const w = window as unknown as Record<string, any>;
@@ -207,7 +215,11 @@ function reset() {
   }
 }
 
-defineExpose({ execute, reset });
+// Surface `misconfigured` / `unsupported` so the page-level submit handlers
+// can distinguish "captcha required but admin forgot the site key" (block
+// + toast) from "captcha required but client doesn't know this provider"
+// (bypass; let the panel reject server-side).
+defineExpose({ execute, resolve, reset, misconfigured, unsupported });
 
 onMounted(async () => {
   if (!required.value || misconfigured.value || unsupported.value) return;

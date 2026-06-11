@@ -37,6 +37,10 @@ pub struct AppState {
     /// Kept as a trait object so a future Linux-no-dbus / Android backend
     /// can plug in without touching command surfaces.
     pub secure: OnceCell<Arc<dyn SecureStore>>,
+    /// User preference for the system-proxy guard, cached before the kernel
+    /// exists. `None` = use the manager default (enabled); `Some(b)` = the
+    /// user toggled it. Applied to the manager in `ensure_kernel`.
+    pub proxy_guard_enabled: RwLock<Option<bool>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -103,6 +107,9 @@ impl AppState {
             work_dir,
         ));
         manager.set_requested_mode(*self.requested_mode.read());
+        if let Some(g) = *self.proxy_guard_enabled.read() {
+            manager.set_proxy_guard_enabled(g);
+        }
         let _ = self.kernel.set(manager.clone());
         Ok(manager)
     }

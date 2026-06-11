@@ -54,8 +54,14 @@ pub struct SubscribeInfo {
     /// Full subscription URL — opaque to the client; pass it to the kernel
     /// after appending the right `?flag=` for the active driver.
     pub subscribe_url: String,
+    /// Days remaining until the next traffic reset. For monthly-reset plans
+    /// this fits comfortably in a `u8`, but the yearly-reset variants
+    /// (`RESET_TRAFFIC_YEARLY` / `RESET_TRAFFIC_FIRST_DAY_YEAR`) legitimately
+    /// emit values up to ~366, which overflows `u8` and causes the whole
+    /// `/user/getSubscribe` response to fail to deserialize on yearly-reset
+    /// deployments. `u16` covers any plausible reset horizon.
     #[serde(default)]
-    pub reset_day: Option<u8>,
+    pub reset_day: Option<u16>,
 }
 
 impl HttpClient {

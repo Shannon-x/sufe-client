@@ -5,13 +5,11 @@
 //! the [`super::observer::StateFanout`] so registered host observers see
 //! Compose `StateFlow` / SwiftUI `@Observable` updates.
 //!
-//! Mobile note (M4 follow-up): the constructor accepts an optional
-//! `TunDelegate` for VpnService / NEPacketTunnelProvider integration, but
-//! the connect path doesn't consult it yet — the launcher is currently
-//! always `DirectLauncher`, which on Android falls through to the kernel
-//! manager's SystemProxy fallback. M4 will introduce a mobile-specific
-//! launcher that drives the host TunDelegate to produce a real fd before
-//! spawning mihomo.
+//! Mobile note: when a `TunDelegate` is supplied (Android `VpnService` / iOS
+//! NE), the connect path now drives it — it asks the host to `establish_tun`,
+//! hands the resulting fd to the [`KernelManager`] via `set_tun_fd`, and the
+//! mihomo config is patched to adopt that fd (`file-descriptor`, no
+//! `auto-route`). Desktop passes no delegate and mihomo opens its own device.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,7 +21,9 @@ use tokio::task::JoinHandle;
 use super::client::Client;
 use super::errors::FfiError;
 use super::observer::{StateFanout, StateObserver, TunDelegate};
-use super::types::{ConnectionState as FfiConnectionState, ProxyGroup, TrafficStats, TunnelMode};
+use super::types::{
+    ConnectionState as FfiConnectionState, ProxyGroup, TrafficStats, TunConfig, TunnelMode,
+};
 use crate::kernel::launcher::DirectLauncher;
 use crate::kernel::KernelManager;
 use crate::kernel::MihomoDriver;
@@ -35,9 +35,9 @@ pub struct ConnectionManager {
     inner: Arc<KernelManager>,
     fanout: Arc<StateFanout>,
     fanout_task: Mutex<Option<JoinHandle<()>>>,
-    /// Held for future M4 mobile integration. The desktop / current-M3 connect
-    /// path doesn't consult it; the launcher is always `DirectLauncher` here.
-    _tun_delegate: Option<Arc<dyn TunDelegate>>,
+    /// Host TUN factory (Android VpnService / iOS NE). When present, `connect`
+    /// asks it for a fd and feeds it to the kernel manager; `None` on desktop.
+    tun_delegate: Option<Arc<dyn TunDelegate>>,
 }
 
 impl ConnectionManager {
@@ -93,7 +93,7 @@ impl ConnectionManager {
             inner,
             fanout,
             fanout_task: Mutex::new(Some(task)),
-            _tun_delegate: tun_delegate,
+            tun_delegate,
         })
     }
 
@@ -115,12 +115,36 @@ impl ConnectionManager {
         // HTTP client at login / hydrate, so this works without any extra
         // wiring as long as the caller is authenticated.
         let info = self.client.http_client().user_subscribe().await?;
-        self.inner.connect(&info.subscribe_url).await?;
+
+        // Mobile: have the host stand up the VpnService / NE tunnel and give
+        // us its fd, then tell the kernel manager to adopt it. Without this
+        // mihomo would try to create its own /dev/net/tun device — denied in
+        // the app sandbox, so the connection could never establish.
+        if let Some(delegate) = self.tun_delegate.as_ref() {
+            if matches!(self.requested_mode(), TunnelMode::Tun) {
+                let fd = delegate.establish_tun(default_tun_config())?;
+                self.inner.set_tun_fd(Some(fd));
+            }
+        }
+
+        if let Err(e) = self.inner.connect(&info.subscribe_url).await {
+            // Roll back the host tunnel if the kernel failed to come up, so we
+            // don't strand an established VpnService with no kernel behind it.
+            if let Some(delegate) = self.tun_delegate.as_ref() {
+                delegate.close_tun();
+                self.inner.set_tun_fd(None);
+            }
+            return Err(e.into());
+        }
         Ok(())
     }
 
     pub async fn disconnect(&self) -> Result<(), FfiError> {
         self.inner.disconnect().await?;
+        if let Some(delegate) = self.tun_delegate.as_ref() {
+            delegate.close_tun();
+            self.inner.set_tun_fd(None);
+        }
         Ok(())
     }
 
@@ -153,6 +177,21 @@ impl ConnectionManager {
 
     pub async fn current_traffic(&self) -> Result<TrafficStats, FfiError> {
         Ok(self.inner.current_traffic().await?.into())
+    }
+}
+
+/// Default TUN parameters handed to the host VpnService / NE when we ask it
+/// to stand up the interface. Mirrors the addressing the sing-box translator
+/// uses (`172.19.0.1/30`) and a full-tunnel route; the host applies these via
+/// `VpnService.Builder` / `NEPacketTunnelNetworkSettings`.
+fn default_tun_config() -> TunConfig {
+    TunConfig {
+        session: "Xboard".to_string(),
+        ipv4_addr: "172.19.0.1".to_string(),
+        ipv4_prefix: 30,
+        routes: vec!["0.0.0.0/0".to_string()],
+        dns: vec!["1.1.1.1".to_string(), "223.5.5.5".to_string()],
+        mtu: 1500,
     }
 }
 

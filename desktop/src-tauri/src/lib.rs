@@ -19,7 +19,7 @@ pub use state::AppState;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
 use xboard_core::api::HttpClient;
@@ -97,14 +97,47 @@ pub fn run() {
             // is created lazily — we (cheaply) poll the AppState for an
             // initialized kernel; subscribing once it appears costs O(1).
             spawn_state_forwarder(app.handle().clone());
+            // Sibling forwarder for kernel-health events
+            // (`connection://kernel-failure` / `connection://kernel-healthy`).
+            spawn_health_forwarder(app.handle().clone());
+            // Stream kernel logs to the frontend Logs page as `connection://log`.
+            spawn_log_forwarder(app.handle().clone());
 
-            // System tray. Closing the main window hides it; the tray menu
-            // is the canonical exit path and also the way to reopen after
-            // hiding. We deliberately keep the menu minimal — ad-hoc
-            // mode/connect controls would duplicate the in-app surface.
+            // System tray with quick connect / disconnect / mode controls.
+            // Tray actions emit `tray://*` events that the frontend store
+            // handles, so all the auth / kernel-readiness logic lives in one
+            // place (the Pinia connection store) instead of being duplicated
+            // here. The tooltip is kept live by `spawn_state_forwarder`.
+            let connect_item =
+                MenuItem::with_id(app, "tray-connect", "连接", true, None::<&str>)?;
+            let disconnect_item =
+                MenuItem::with_id(app, "tray-disconnect", "断开", true, None::<&str>)?;
+            let mode_tun_item =
+                MenuItem::with_id(app, "tray-mode-tun", "TUN 模式", true, None::<&str>)?;
+            let mode_sys_item =
+                MenuItem::with_id(app, "tray-mode-sysproxy", "系统代理模式", true, None::<&str>)?;
+            let logs_item =
+                MenuItem::with_id(app, "tray-logs", "实时日志", true, None::<&str>)?;
             let show_item = MenuItem::with_id(app, "tray-show", "显示主窗口", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "tray-quit", "退出 Xboard", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let sep1 = PredefinedMenuItem::separator(app)?;
+            let sep2 = PredefinedMenuItem::separator(app)?;
+            let sep3 = PredefinedMenuItem::separator(app)?;
+            let menu = Menu::with_items(
+                app,
+                &[
+                    &connect_item,
+                    &disconnect_item,
+                    &sep1,
+                    &mode_tun_item,
+                    &mode_sys_item,
+                    &sep2,
+                    &logs_item,
+                    &show_item,
+                    &sep3,
+                    &quit_item,
+                ],
+            )?;
             let qr_for_menu = qr_for_setup.clone();
             let _tray = TrayIconBuilder::with_id("xboard-main")
                 .icon(
@@ -112,10 +145,26 @@ pub fn run() {
                         .cloned()
                         .expect("default window icon should be configured"),
                 )
-                .tooltip("Xboard")
+                .tooltip("Xboard — 未连接")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id().as_ref() {
+                    "tray-connect" => {
+                        let _ = app.emit("tray://connect", ());
+                    }
+                    "tray-disconnect" => {
+                        let _ = app.emit("tray://disconnect", ());
+                    }
+                    "tray-mode-tun" => {
+                        let _ = app.emit("tray://set-mode", "tun");
+                    }
+                    "tray-mode-sysproxy" => {
+                        let _ = app.emit("tray://set-mode", "system_proxy");
+                    }
+                    "tray-logs" => {
+                        show_main_window(app);
+                        let _ = app.emit("tray://open-logs", ());
+                    }
                     "tray-show" => show_main_window(app),
                     "tray-quit" => {
                         qr_for_menu.store(true, Ordering::SeqCst);
@@ -166,8 +215,17 @@ pub fn run() {
                 let Some(km) = state.kernel.get().cloned() else {
                     return;
                 };
+                // Bound the teardown: `disconnect` clears the OS proxy *first*
+                // and then stops the kernel, so even if a hung kernel makes the
+                // stop step stall, the proxy is already restored. The 3 s cap
+                // guarantees exit never blocks indefinitely (the OS reaps the
+                // child via kill_on_drop regardless).
                 tauri::async_runtime::block_on(async move {
-                    let _ = km.disconnect().await;
+                    let _ = tokio::time::timeout(
+                        std::time::Duration::from_secs(3),
+                        km.disconnect(),
+                    )
+                    .await;
                 });
             }
             _ => {}
@@ -195,6 +253,14 @@ pub fn run() {
             commands::connection::node_geo_test,
             commands::connection::resolve_node_geo_batch,
             commands::connection::current_traffic,
+            commands::connection::connections,
+            commands::connection::close_connection,
+            commands::connection::close_all_connections,
+            commands::connection::rules,
+            commands::connection::reconnect,
+            commands::connection::set_proxy_guard_enabled,
+            commands::connection::proxy_guard_enabled,
+            commands::nodes::preview_subscribe_nodes,
             commands::kernel::kernel_health,
             commands::kernel::kernel_version,
             commands::kernel::tail_kernel_log,
@@ -208,6 +274,7 @@ pub fn run() {
             commands::billing::save_order,
             commands::billing::checkout_order,
             commands::billing::check_order,
+            commands::billing::check_coupon,
             commands::billing::cancel_order,
             commands::ticket::fetch_tickets,
             commands::ticket::fetch_ticket,
@@ -262,12 +329,97 @@ fn spawn_state_forwarder(app: tauri::AppHandle) {
         };
 
         // Replay the *current* state once so listeners that hooked up
-        // before the manager existed get a well-defined initial value.
-        let _ = app.emit("xboard://connection-state", manager.state());
+        // before the manager existed get a well-defined initial value, and
+        // seed the tray tooltip.
+        let initial = manager.state();
+        let _ = app.emit("xboard://connection-state", initial.clone());
+        update_tray_tooltip(&app, &initial);
 
         let mut stream = manager.subscribe_state();
-        while let Some(s) = stream.next().await {
-            let _ = app.emit("xboard://connection-state", s);
+        while let Some(next) = stream.next().await {
+            let _ = app.emit("xboard://connection-state", next.clone());
+            update_tray_tooltip(&app, &next);
+        }
+    });
+}
+
+/// Reflect the live connection state in the tray tooltip so the user can read
+/// it without opening the window.
+fn update_tray_tooltip(app: &tauri::AppHandle, state: &xboard_core::kernel::ConnectionState) {
+    use xboard_core::kernel::{ConnectionState, TunnelMode};
+    let label = match state {
+        ConnectionState::Disconnected => "未连接".to_string(),
+        ConnectionState::Connecting { .. } => "连接中…".to_string(),
+        ConnectionState::Connected { mode, .. } => {
+            let m = match mode {
+                TunnelMode::Tun => "TUN",
+                TunnelMode::SystemProxy => "系统代理",
+            };
+            format!("已连接 · {m}")
+        }
+        ConnectionState::Error { .. } => "连接错误".to_string(),
+    };
+    if let Some(tray) = app.tray_by_id("xboard-main") {
+        let _ = tray.set_tooltip(Some(&format!("Xboard — {label}")));
+    }
+}
+
+/// Background task: same shape as [`spawn_state_forwarder`] but pumping
+/// the kernel-health channel into two distinct frontend events so the UI
+/// can wire them independently. `Exited` / `Unresponsive` both land on
+/// `connection://kernel-failure` (the UI dispatches on `kind`), and
+/// `Healthy` lands on `connection://kernel-healthy` so a banner can clear.
+fn spawn_health_forwarder(app: tauri::AppHandle) {
+    use futures::StreamExt;
+    use std::time::Duration;
+    use tauri::Emitter;
+    use xboard_core::kernel::KernelHealthEvent;
+
+    tauri::async_runtime::spawn(async move {
+        let manager = loop {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            if let Some(state) = app.try_state::<AppState>() {
+                if let Some(km) = state.kernel.get().cloned() {
+                    break km;
+                }
+            }
+        };
+        let mut stream = manager.subscribe_health();
+        while let Some(evt) = stream.next().await {
+            match evt {
+                KernelHealthEvent::Healthy => {
+                    let _ = app.emit("connection://kernel-healthy", serde_json::json!({}));
+                }
+                other @ (KernelHealthEvent::Exited { .. }
+                | KernelHealthEvent::Unresponsive { .. }) => {
+                    let _ = app.emit("connection://kernel-failure", other);
+                }
+            }
+        }
+    });
+}
+
+/// Background task: pump the kernel's live log stream to the frontend Logs
+/// page as `connection://log`. The driver's broadcast channel exists for the
+/// manager's whole lifetime, so a single early subscription captures logs
+/// across every connect/disconnect cycle.
+fn spawn_log_forwarder(app: tauri::AppHandle) {
+    use futures::StreamExt;
+    use std::time::Duration;
+    use tauri::Emitter;
+
+    tauri::async_runtime::spawn(async move {
+        let manager = loop {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            if let Some(state) = app.try_state::<AppState>() {
+                if let Some(km) = state.kernel.get().cloned() {
+                    break km;
+                }
+            }
+        };
+        let mut stream = manager.live_logs();
+        while let Some(line) = stream.next().await {
+            let _ = app.emit("connection://log", line);
         }
     });
 }

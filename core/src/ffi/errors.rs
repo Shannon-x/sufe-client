@@ -79,6 +79,13 @@ impl From<XboardError> for FfiError {
                 message,
             },
             XboardError::Unauthorized => FfiError::Unauthorized,
+            // Reuse the ApiFailure carrier (status + message) so the mobile
+            // hosts get the HTTP status without a UDL change. A dedicated
+            // variant + "renew plan" UI lands with the mobile work.
+            XboardError::SubscriptionUnavailable { status } => FfiError::ApiFailure {
+                status_code: status,
+                message: "订阅当前不可用——套餐可能已到期或流量耗尽，请续费后重试".to_string(),
+            },
             XboardError::KernelNotRunning => FfiError::KernelNotRunning,
             XboardError::KernelStartTimeout => FfiError::KernelStartTimeout,
             XboardError::KernelBinaryMissing { path } => FfiError::KernelBinaryMissing { path },
@@ -139,5 +146,21 @@ pub enum TunnelError {
 impl From<TunnelError> for XboardError {
     fn from(err: TunnelError) -> Self {
         XboardError::Kernel(format!("tun delegate: {err}"))
+    }
+}
+
+impl From<TunnelError> for FfiError {
+    fn from(err: TunnelError) -> Self {
+        // The host's VpnService / NE refused or failed to stand up the tunnel
+        // (permission revoked, another VPN active, builder error). Surface it
+        // as a generic error the mobile UI can toast.
+        match err {
+            TunnelError::Denied { reason } => {
+                FfiError::Other(format!("tun delegate denied: {reason}"))
+            }
+            TunnelError::Backend { reason } => {
+                FfiError::Other(format!("tun delegate backend error: {reason}"))
+            }
+        }
     }
 }

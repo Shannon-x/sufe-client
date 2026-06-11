@@ -118,9 +118,32 @@ async function onSendCode() {
     message.error(t("register.fillAll"));
     return;
   }
+  // Some Xboard forks require captcha on the sendEmailVerify endpoint too.
+  // Mirror the submit-time gate so a misconfigured panel surfaces an error
+  // here rather than silently bouncing the verification email.
+  if (captchaRef.value?.misconfigured) {
+    message.error(t("captcha.misconfigured"));
+    return;
+  }
   sendingCode.value = true;
   try {
-    await api.sendEmailVerify(email);
+    const captchaTok = await resolveCaptcha();
+    if (
+      captchaRequired.value &&
+      captchaType.value !== "recaptcha-v3" &&
+      !captchaTok &&
+      !captchaRef.value?.unsupported &&
+      !captchaRef.value?.misconfigured
+    ) {
+      message.error(t("login.captchaRequired"));
+      sendingCode.value = false;
+      return;
+    }
+    await api.sendEmailVerify(
+      email,
+      captchaRequired.value ? captchaType.value : undefined,
+      captchaTok,
+    );
     message.success(t("register.codeSent"));
     codeCountdown.value = 60;
     countdownTimer = window.setInterval(() => {
@@ -164,10 +187,20 @@ async function onSubmit() {
     message.error(t("register.mustAgreeTos"));
     return;
   }
+  if (captchaRef.value?.misconfigured) {
+    message.error(t("captcha.misconfigured"));
+    return;
+  }
   submitting.value = true;
   try {
     const token = await resolveCaptcha();
-    if (captchaRequired.value && captchaType.value !== "recaptcha-v3" && !token) {
+    if (
+      captchaRequired.value &&
+      captchaType.value !== "recaptcha-v3" &&
+      !token &&
+      !captchaRef.value?.unsupported &&
+      !captchaRef.value?.misconfigured
+    ) {
       message.error(t("login.captchaRequired"));
       submitting.value = false;
       return;
@@ -177,11 +210,9 @@ async function onSubmit() {
       password: model.password,
       emailCode: model.emailCode,
       inviteCode: model.inviteCode || undefined,
-      turnstile: captchaType.value === "turnstile" ? token : undefined,
-      recaptcha:
-        captchaType.value === "recaptcha" || captchaType.value === "recaptcha-v3"
-          ? token
-          : undefined,
+      // Provider tag + token; Rust routes it to the right backend field.
+      captchaType: captchaRequired.value ? captchaType.value : undefined,
+      captchaToken: token,
     });
     message.success(t("register.success", { email: summary.email }));
     router.push("/");

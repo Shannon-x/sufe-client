@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onMounted, ref } from "vue";
+import { computed, h, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import {
@@ -52,6 +52,16 @@ async function load() {
 }
 
 onMounted(load);
+
+// Re-fetch whenever the window regains focus. Payment happens in an external
+// browser tab, so when the user tabs back into the app the order row should
+// reflect its new status without requiring a manual refresh click.
+onMounted(() => {
+  window.addEventListener("focus", load);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener("focus", load);
+});
 
 function openResume(order: Order) {
   resumeTradeNo.value = order.trade_no;

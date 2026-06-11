@@ -68,10 +68,24 @@ async function onSubmit() {
   } catch {
     return;
   }
+  // If the panel admin enabled captcha but forgot the site key we can't
+  // produce a token — surface that loudly. If the configured provider is
+  // one this build doesn't know how to render, bypass the gate and let the
+  // backend reject the submission with its own error.
+  if (captchaRef.value?.misconfigured) {
+    message.error(t("captcha.misconfigured"));
+    return;
+  }
   submitting.value = true;
   try {
     const token = await resolveCaptcha();
-    if (captchaRequired.value && captchaType.value !== "recaptcha-v3" && !token) {
+    if (
+      captchaRequired.value &&
+      captchaType.value !== "recaptcha-v3" &&
+      !token &&
+      !captchaRef.value?.unsupported &&
+      !captchaRef.value?.misconfigured
+    ) {
       message.error(t("login.captchaRequired"));
       submitting.value = false;
       return;
@@ -79,15 +93,18 @@ async function onSubmit() {
     const summary = await auth.login({
       email: model.email.trim(),
       password: model.password,
-      turnstile: captchaType.value === "turnstile" ? token : undefined,
-      recaptcha:
-        captchaType.value === "recaptcha" || captchaType.value === "recaptcha-v3"
-          ? token
-          : undefined,
+      // Pass the provider tag + token; the Rust side routes the token into
+      // the exact field the panel's CaptchaService reads (turnstile_token /
+      // recaptcha_v3_token / recaptcha_data). Collapsing v3 into the v2
+      // field was what broke Turnstile/v3 panels.
+      captchaType: captchaRequired.value ? captchaType.value : undefined,
+      captchaToken: token,
     });
     message.success(t("login.success", { email: summary.email }));
-    sessionStorage.setItem("xboard.autoConnectAfterLogin", "1");
     const redirect = (route.query.redirect as string) || "/";
+    if (redirect === "/" || redirect === "/home") {
+      sessionStorage.setItem("xboard.autoConnectAfterLogin", "1");
+    }
     router.push(redirect);
   } catch (e) {
     captchaRef.value?.reset();

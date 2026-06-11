@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
-use crate::error::Result;
+use crate::error::{Result, XboardError};
 
 /// Identifier for a kernel implementation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -77,6 +77,40 @@ pub struct LogLine {
     pub at: chrono::DateTime<chrono::Utc>,
 }
 
+/// One active connection as reported by mihomo `GET /connections`. Flattened
+/// from the kernel's nested `metadata` so the UI can render a flat table
+/// (host, rule, proxy chain, throughput, process) like clash-verge / FlClash.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ConnectionItem {
+    pub id: String,
+    pub upload: u64,
+    pub download: u64,
+    /// RFC3339 timestamp string straight from the kernel (UI computes age).
+    pub start: String,
+    /// Proxy chain, outermost-first (e.g. `["🇭🇰 HK", "Proxy"]`).
+    pub chains: Vec<String>,
+    pub rule: String,
+    pub rule_payload: String,
+    pub network: String,
+    pub conn_type: String,
+    /// Best display target: `metadata.host` if present, else destination IP.
+    pub host: String,
+    pub source_ip: String,
+    pub destination_ip: String,
+    pub destination_port: String,
+    /// Originating process name (empty when the kernel can't attribute it).
+    pub process: String,
+}
+
+/// One routing rule as reported by mihomo `GET /rules`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleItem {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub payload: String,
+    pub proxy: String,
+}
+
 /// All implementations MUST be `Send + Sync` because they are wrapped in
 /// `Arc<dyn KernelDriver>` and shared across UI threads.
 #[async_trait]
@@ -119,4 +153,25 @@ pub trait KernelDriver: Send + Sync {
 
     /// Subscribe to streaming logs. The caller MAY drop the stream early.
     fn log_stream(&self) -> BoxStream<'static, LogLine>;
+
+    /// Snapshot of currently-active connections. Default: empty (drivers
+    /// that don't expose a control plane just report nothing).
+    async fn connections(&self) -> Result<Vec<ConnectionItem>> {
+        Ok(Vec::new())
+    }
+
+    /// Force-close one connection by id.
+    async fn close_connection(&self, _id: &str) -> Result<()> {
+        Err(XboardError::NotImplemented("close_connection"))
+    }
+
+    /// Force-close every active connection (e.g. before a node switch).
+    async fn close_all_connections(&self) -> Result<()> {
+        Ok(())
+    }
+
+    /// The kernel's active routing rules. Default: empty.
+    async fn rules(&self) -> Result<Vec<RuleItem>> {
+        Ok(Vec::new())
+    }
 }

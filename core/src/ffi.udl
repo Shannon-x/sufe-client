@@ -227,7 +227,7 @@ dictionary SiteConfig {
     string captcha_type;
     string recaptcha_site_key;
     string recaptcha_v3_site_key;
-    f32 recaptcha_v3_score_threshold;
+    f32? recaptcha_v3_score_threshold;
     string turnstile_site_key;
     boolean is_recaptcha;
     string app_description;
@@ -263,7 +263,7 @@ dictionary SubscribeInfo {
     /// Total bytes allowed this period.
     u64 transfer_enable;
     string subscribe_url;
-    u8? reset_day;
+    u16? reset_day;
 };
 
 // ---------------------------------------------------------------------- //
@@ -328,6 +328,17 @@ dictionary SaveOrderArgs {
     /// One of `month_price` / `quarter_price` / etc.
     string period;
     string? coupon_code;
+};
+
+/// Resolved discount for a coupon validated against a plan.
+/// `kind` discriminates the value semantics — see `core::api::order::CouponCheckResult`:
+///   - `1` → `value` is cents off
+///   - `2` → `value` is an integer percent (0..=100)
+dictionary CouponCheckResult {
+    i64 id;
+    string code;
+    i32 kind;
+    i64? value;
 };
 
 dictionary Order {
@@ -431,7 +442,7 @@ interface Client {
     LoginSummary register(RegisterArgs args);
 
     [Async, Throws=FfiError]
-    void send_email_verify(string email);
+    void send_email_verify(string email, string? captcha_token);
 
     [Async, Throws=FfiError]
     void forget_password(ForgetPasswordArgs args);
@@ -475,6 +486,12 @@ interface Client {
 
     [Async, Throws=FfiError]
     sequence<Order> fetch_orders();
+
+    /// Validate a coupon `code` against `plan_id`. The panel rejects
+    /// invalid / expired / wrong-plan codes with an envelope error,
+    /// surfaced here as `FfiError::Api`.
+    [Async, Throws=FfiError]
+    CouponCheckResult check_coupon(string code, i64 plan_id);
 
     [Async, Throws=FfiError]
     sequence<Ticket> fetch_tickets();

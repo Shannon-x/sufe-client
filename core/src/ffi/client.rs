@@ -26,12 +26,28 @@ use serde::{Deserialize, Serialize};
 use super::errors::FfiError;
 use super::secure::{CallbackSecureStore, SecureStore};
 use super::types::{
-    CheckoutResponse, ForgetPasswordArgs, LoginArgs, LoginSummary, Notice, Order, PaymentMethod,
-    Plan, RegisterArgs, SaveOrderArgs, SaveTicketArgs, SiteConfig, SubscribeInfo, Ticket,
-    TicketDetail, UserInfo,
+    CheckoutResponse, CouponCheckResult, ForgetPasswordArgs, LoginArgs, LoginSummary, Notice,
+    Order, PaymentMethod, Plan, RegisterArgs, SaveOrderArgs, SaveTicketArgs, SiteConfig,
+    SubscribeInfo, Ticket, TicketDetail, UserInfo,
 };
-use crate::api::{HttpClient, LoginRequest, RegisterRequest};
+use crate::api::{Captcha, HttpClient, LoginRequest, RegisterRequest};
 use crate::storage::SecureStore as CoreSecureStore;
+
+/// Map the FFI's two legacy captcha slots (`turnstile` / `recaptcha`) onto
+/// the unified [`Captcha`] so the token reaches the field the backend's
+/// `CaptchaService` actually reads (`turnstile_token` / `recaptcha_data`).
+/// Mobile has no captcha widget yet (both slots are always `None` today);
+/// reCAPTCHA v3 support arrives with the mobile captcha UI — see segment 3,
+/// at which point these args gain an explicit `captcha_type`.
+fn legacy_captcha<'a>(turnstile: Option<&'a str>, recaptcha: Option<&'a str>) -> Captcha<'a> {
+    if let Some(t) = turnstile.filter(|s| !s.is_empty()) {
+        Captcha::from_type(Some("turnstile"), Some(t))
+    } else if let Some(r) = recaptcha.filter(|s| !s.is_empty()) {
+        Captcha::from_type(Some("recaptcha"), Some(r))
+    } else {
+        Captcha::default()
+    }
+}
 
 /// Persisted session metadata. Lives alongside the bearer in the host
 /// SecureStore under the `session` key.
@@ -147,8 +163,7 @@ impl Client {
         let req = LoginRequest {
             email: &args.email,
             password: &args.password,
-            recaptcha_data: args.recaptcha.as_deref(),
-            turnstile: args.turnstile.as_deref(),
+            captcha: legacy_captcha(args.turnstile.as_deref(), args.recaptcha.as_deref()),
         };
         let auth = self.http.login(&req).await?;
         self.persist_session(&args.email, &auth).await?;
@@ -161,16 +176,26 @@ impl Client {
             password: &args.password,
             email_code: &args.email_code,
             invite_code: args.invite_code.as_deref(),
-            recaptcha_data: args.recaptcha.as_deref(),
-            turnstile: args.turnstile.as_deref(),
+            captcha: legacy_captcha(args.turnstile.as_deref(), args.recaptcha.as_deref()),
         };
         let auth = self.http.register(&req).await?;
         self.persist_session(&args.email, &auth).await?;
         Ok(LoginSummary::from_auth_result(args.email, &auth))
     }
 
-    pub async fn send_email_verify(&self, email: String) -> Result<(), FfiError> {
-        self.http.send_email_verify(&email).await?;
+    pub async fn send_email_verify(
+        &self,
+        email: String,
+        captcha_token: Option<String>,
+    ) -> Result<(), FfiError> {
+        // No type hint on the FFI surface yet — treat the token as v2
+        // reCAPTCHA (the historical default). Mobile passes None today.
+        self.http
+            .send_email_verify(
+                &email,
+                Captcha::from_type(Some("recaptcha"), captcha_token.as_deref()),
+            )
+            .await?;
         Ok(())
     }
 
@@ -180,8 +205,7 @@ impl Client {
                 &args.email,
                 &args.password,
                 &args.email_code,
-                args.recaptcha.as_deref(),
-                args.turnstile.as_deref(),
+                legacy_captcha(args.turnstile.as_deref(), args.recaptcha.as_deref()),
             )
             .await?;
         Ok(())
@@ -259,6 +283,14 @@ impl Client {
     pub async fn fetch_orders(&self) -> Result<Vec<Order>, FfiError> {
         let raw = self.http.fetch_orders().await?;
         Ok(raw.into_iter().map(Order::from).collect())
+    }
+
+    pub async fn check_coupon(
+        &self,
+        code: String,
+        plan_id: i64,
+    ) -> Result<CouponCheckResult, FfiError> {
+        Ok(self.http.check_coupon(&code, plan_id).await?.into())
     }
 
     // -- Tickets -----------------------------------------------------------

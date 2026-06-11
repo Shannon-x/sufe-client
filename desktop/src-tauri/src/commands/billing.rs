@@ -5,7 +5,9 @@
 //! poll all share the same gate via `require_auth`.
 
 use tauri::State;
-use xboard_core::api::{CheckoutResponse, HttpClient, Order, PaymentMethod, Plan};
+use xboard_core::api::{
+    CheckoutResponse, CouponCheckResult, HttpClient, Order, PaymentMethod, Plan,
+};
 
 use crate::error::{CommandError, CommandResult};
 use crate::state::AppState;
@@ -78,6 +80,24 @@ pub async fn check_order(state: State<'_, AppState>, trade_no: String) -> Comman
     }
     let client = require_auth(&state)?;
     Ok(client.check_order(trade_no.trim()).await?)
+}
+
+/// Validate a coupon `code` against `plan_id`. The panel returns an
+/// envelope error for invalid / expired / wrong-plan codes; we surface
+/// that as `CommandError::Api` so the UI can pin the message under the
+/// coupon field rather than firing a toast.
+#[tauri::command]
+pub async fn check_coupon(
+    state: State<'_, AppState>,
+    code: String,
+    plan_id: i64,
+) -> CommandResult<CouponCheckResult> {
+    let trimmed = code.trim();
+    if trimmed.is_empty() {
+        return Err(CommandError::new("invalid_coupon", "请输入优惠码"));
+    }
+    let client = require_auth(&state)?;
+    Ok(client.check_coupon(trimmed, plan_id).await?)
 }
 
 #[tauri::command]

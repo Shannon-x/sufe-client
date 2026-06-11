@@ -42,6 +42,11 @@ impl From<XboardError> for CommandError {
             XboardError::Unauthorized => {
                 CommandError::new("unauthorized", "未登录或登录已失效").with_status(401)
             }
+            XboardError::SubscriptionUnavailable { status } => CommandError::new(
+                "subscription_unavailable",
+                "订阅当前不可用——套餐可能已到期或流量耗尽，请续费后重试",
+            )
+            .with_status(status),
             XboardError::KernelNotRunning => CommandError::new("kernel_not_running", "内核未运行"),
             XboardError::KernelStartTimeout => {
                 CommandError::new("kernel_start_timeout", "内核启动超时")

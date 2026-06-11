@@ -11,7 +11,9 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager, State};
 use tokio::net::lookup_host;
 use tokio::time::{sleep, Duration};
-use xboard_core::kernel::{ConnectionState, ProxyGroup, TrafficStats, TunnelMode};
+use xboard_core::kernel::{
+    ConnectionItem, ConnectionState, ProxyGroup, RuleItem, TrafficStats, TunnelMode,
+};
 
 use crate::error::{CommandError, CommandResult};
 use crate::state::AppState;
@@ -42,7 +44,13 @@ pub async fn connect(state: State<'_, AppState>, app: AppHandle) -> CommandResul
     let subscribe = client.user_subscribe().await?;
     if subscribe.token != auth.subscribe_token {
         // Refresh our cached session token; the bearer is still valid.
-        state.auth.write().as_mut().unwrap().subscribe_token = subscribe.token.clone();
+        // Guard against a concurrent logout having cleared `auth` while we
+        // awaited above — an `unwrap()` here would panic the command thread
+        // and abort the process (panic=abort), leaking TUN/system-proxy
+        // state. If the session is gone, just skip the cache update.
+        if let Some(session) = state.auth.write().as_mut() {
+            session.subscribe_token = subscribe.token.clone();
+        }
     }
 
     let manager = state.ensure_kernel(&app)?;
@@ -378,7 +386,7 @@ async fn batch_lookup_geo(ips: &HashSet<IpAddr>) -> HashMap<IpAddr, NodeGeo> {
             .iter()
             .map(|ip| serde_json::json!({ "query": ip.to_string() }))
             .collect();
-        let url = "http://ip-api.com/batch?fields=status,country,countryCode,city,lat,lon,isp,org,query";
+        let url = "https://ip-api.com/batch?fields=status,country,countryCode,city,lat,lon,isp,org,query";
         let resp = match client.post(url).json(&payload).send().await {
             Ok(r) if r.status().is_success() => r,
             _ => continue,
@@ -412,4 +420,84 @@ async fn batch_lookup_geo(ips: &HashSet<IpAddr>) -> HashMap<IpAddr, NodeGeo> {
         }
     }
     out
+}
+
+// ─── Observability: connections / rules ─────────────────────────────────
+
+/// Snapshot of active connections (for the Connections monitor page).
+#[tauri::command]
+pub async fn connections(state: State<'_, AppState>) -> CommandResult<Vec<ConnectionItem>> {
+    let manager = state
+        .kernel
+        .get()
+        .cloned()
+        .ok_or_else(|| CommandError::new("kernel_not_running", "内核未启动"))?;
+    Ok(manager.connections().await?)
+}
+
+#[tauri::command]
+pub async fn close_connection(state: State<'_, AppState>, id: String) -> CommandResult<()> {
+    let manager = state
+        .kernel
+        .get()
+        .cloned()
+        .ok_or_else(|| CommandError::new("kernel_not_running", "内核未启动"))?;
+    manager.close_connection(&id).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn close_all_connections(state: State<'_, AppState>) -> CommandResult<()> {
+    let manager = state
+        .kernel
+        .get()
+        .cloned()
+        .ok_or_else(|| CommandError::new("kernel_not_running", "内核未启动"))?;
+    manager.close_all_connections().await?;
+    Ok(())
+}
+
+/// The kernel's active routing rules (for the Rules page).
+#[tauri::command]
+pub async fn rules(state: State<'_, AppState>) -> CommandResult<Vec<RuleItem>> {
+    let manager = state
+        .kernel
+        .get()
+        .cloned()
+        .ok_or_else(|| CommandError::new("kernel_not_running", "内核未启动"))?;
+    Ok(manager.rules().await?)
+}
+
+// ─── Reliability: reconnect + sysproxy guard toggle ─────────────────────
+
+/// Re-establish the connection with the last subscribe URL — used by the
+/// frontend's bounded auto-reconnect after a `connection://kernel-failure`.
+#[tauri::command]
+pub async fn reconnect(state: State<'_, AppState>) -> CommandResult<ConnectionState> {
+    let manager = state
+        .kernel
+        .get()
+        .cloned()
+        .ok_or_else(|| CommandError::new("kernel_not_running", "内核未启动"))?;
+    manager.reconnect().await?;
+    Ok(manager.state())
+}
+
+#[tauri::command]
+pub fn set_proxy_guard_enabled(state: State<'_, AppState>, enabled: bool) -> CommandResult<()> {
+    if let Some(manager) = state.kernel.get() {
+        manager.set_proxy_guard_enabled(enabled);
+    }
+    // Cache so the choice applies even if the kernel isn't built yet.
+    *state.proxy_guard_enabled.write() = Some(enabled);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn proxy_guard_enabled(state: State<'_, AppState>) -> CommandResult<bool> {
+    Ok(state
+        .kernel
+        .get()
+        .map(|m| m.proxy_guard_enabled())
+        .unwrap_or_else(|| state.proxy_guard_enabled.read().unwrap_or(true)))
 }

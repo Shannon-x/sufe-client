@@ -1,7 +1,7 @@
 use secrecy::SecretString;
 use serde::Serialize;
 use tauri::State;
-use xboard_core::api::{LoginRequest, RegisterRequest};
+use xboard_core::api::{Captcha, LoginRequest, RegisterRequest};
 
 use crate::commands::session::{clear_session, store_session_after_auth};
 use crate::error::{CommandError, CommandResult};
@@ -20,8 +20,8 @@ pub async fn login(
     state: State<'_, AppState>,
     email: String,
     password: String,
-    turnstile: Option<String>,
-    recaptcha: Option<String>,
+    captcha_type: Option<String>,
+    captcha_token: Option<String>,
 ) -> CommandResult<LoginSummary> {
     let client = state
         .snapshot_client()
@@ -30,8 +30,7 @@ pub async fn login(
     let req = LoginRequest {
         email: &email,
         password: &password,
-        recaptcha_data: recaptcha.as_deref(),
-        turnstile: turnstile.as_deref(),
+        captcha: Captcha::from_type(captcha_type.as_deref(), captcha_token.as_deref()),
     };
     let auth = client.login(&req).await?;
 
@@ -67,8 +66,8 @@ pub async fn register(
     password: String,
     email_code: String,
     invite_code: Option<String>,
-    turnstile: Option<String>,
-    recaptcha: Option<String>,
+    captcha_type: Option<String>,
+    captcha_token: Option<String>,
 ) -> CommandResult<LoginSummary> {
     let client = state
         .snapshot_client()
@@ -79,8 +78,7 @@ pub async fn register(
         password: &password,
         email_code: &email_code,
         invite_code: invite_code.as_deref(),
-        recaptcha_data: recaptcha.as_deref(),
-        turnstile: turnstile.as_deref(),
+        captcha: Captcha::from_type(captcha_type.as_deref(), captcha_token.as_deref()),
     };
     let auth = client.register(&req).await?;
 
@@ -110,11 +108,21 @@ pub async fn register(
 }
 
 #[tauri::command]
-pub async fn send_email_verify(state: State<'_, AppState>, email: String) -> CommandResult<()> {
+pub async fn send_email_verify(
+    state: State<'_, AppState>,
+    email: String,
+    captcha_type: Option<String>,
+    captcha_token: Option<String>,
+) -> CommandResult<()> {
     let client = state
         .snapshot_client()
         .ok_or_else(|| CommandError::new("not_initialized", "请先选择后端服务地址"))?;
-    client.send_email_verify(&email).await?;
+    client
+        .send_email_verify(
+            &email,
+            Captcha::from_type(captcha_type.as_deref(), captcha_token.as_deref()),
+        )
+        .await?;
     Ok(())
 }
 
@@ -124,8 +132,8 @@ pub async fn forget_password(
     email: String,
     password: String,
     email_code: String,
-    turnstile: Option<String>,
-    recaptcha: Option<String>,
+    captcha_type: Option<String>,
+    captcha_token: Option<String>,
 ) -> CommandResult<()> {
     let client = state
         .snapshot_client()
@@ -135,8 +143,7 @@ pub async fn forget_password(
             &email,
             &password,
             &email_code,
-            recaptcha.as_deref(),
-            turnstile.as_deref(),
+            Captcha::from_type(captcha_type.as_deref(), captcha_token.as_deref()),
         )
         .await?;
     Ok(())

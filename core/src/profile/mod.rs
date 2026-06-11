@@ -8,5 +8,5 @@ pub mod inject;
 pub mod inject_singbox;
 
 pub use fetcher::{ProfileFetcher, ProfileSnapshot};
-pub use inject::{patch_mihomo, TunnelMode};
+pub use inject::{patch_mihomo, patch_mihomo_with_tun_fd, TunnelMode};
 pub use inject_singbox::patch_singbox;

@@ -9,6 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::serde_helpers::{deserialize_opt_f64_lenient, deserialize_opt_i64_lenient};
 use super::HttpClient;
 use crate::error::{Result, XboardError};
 
@@ -26,9 +27,11 @@ pub struct PaymentMethod {
     pub payment: String,
     #[serde(default)]
     pub icon: Option<String>,
-    #[serde(default)]
+    // Panels with un-cast MySQL DECIMAL columns wire these as JSON strings
+    // (e.g. `"0.00"`); see the `de_num_or_string` module comment.
+    #[serde(default, deserialize_with = "deserialize_opt_i64_lenient")]
     pub handling_fee_fixed: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_f64_lenient")]
     pub handling_fee_percent: Option<f64>,
 }
 
@@ -49,6 +52,25 @@ pub struct CheckoutResponse {
     pub kind: i32,
     #[serde(default)]
     pub data: serde_json::Value,
+}
+
+/// Result of `POST /api/v1/user/coupon/check`.
+///
+/// `type` discriminates how the discount applies:
+///   - `1` → fixed amount (`value` is cents).
+///   - `2` → percent off (`value` is an integer percent in `0..=100`).
+///
+/// `value` is wired leniently because some panel builds emit it as a JSON
+/// string (e.g. `"1000"`) from an un-cast MySQL column.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CouponCheckResult {
+    pub id: i64,
+    #[serde(default)]
+    pub code: String,
+    #[serde(rename = "type")]
+    pub r#type: i32,
+    #[serde(default, deserialize_with = "deserialize_opt_i64_lenient")]
+    pub value: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -197,6 +219,26 @@ impl HttpClient {
         )))
     }
 
+    /// Validate a coupon code against a plan and return the resolved
+    /// discount descriptor. The panel rejects invalid / expired / wrong-plan
+    /// codes with an envelope error, which surfaces here as `ApiFailure`.
+    pub async fn check_coupon(&self, code: &str, plan_id: i64) -> Result<CouponCheckResult> {
+        #[derive(Serialize)]
+        struct Body<'a> {
+            code: &'a str,
+            plan_id: i64,
+        }
+        // `post_json` already strips the `{status,data}` envelope, so most
+        // panels deliver the coupon record directly. A handful of forks emit
+        // an extra `{data: ...}` wrapper inside the envelope — handle both.
+        let raw: serde_json::Value = self
+            .post_json("/api/v1/user/coupon/check", &Body { code, plan_id })
+            .await?;
+        let inner = raw.get("data").cloned().unwrap_or(raw);
+        serde_json::from_value(inner)
+            .map_err(|e| XboardError::Other(anyhow::anyhow!("coupon check parse: {e}")))
+    }
+
     pub async fn cancel_order(&self, trade_no: &str) -> Result<()> {
         #[derive(Serialize)]
         struct Body<'a> {
@@ -212,6 +254,53 @@ impl HttpClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn payment_method_accepts_decimal_strings() {
+        // Real wire payload from a panel whose `payments` table has
+        // un-cast DECIMAL columns — both fees arrive as strings.
+        let raw = r#"{
+            "id": 1,
+            "name": "Alipay F2F",
+            "payment": "AlipayF2F",
+            "icon": null,
+            "handling_fee_fixed": "0.00",
+            "handling_fee_percent": "0.00"
+        }"#;
+        let pm: PaymentMethod = serde_json::from_str(raw).unwrap();
+        assert_eq!(pm.id, 1);
+        assert_eq!(pm.handling_fee_fixed, Some(0));
+        assert_eq!(pm.handling_fee_percent, Some(0.0));
+    }
+
+    #[test]
+    fn payment_method_still_accepts_real_numbers() {
+        // Backward-compat: panels that *do* cast continue to round-trip.
+        let raw = r#"{
+            "id": 7,
+            "name": "Stripe",
+            "payment": "Stripe",
+            "handling_fee_fixed": 25,
+            "handling_fee_percent": 2.5
+        }"#;
+        let pm: PaymentMethod = serde_json::from_str(raw).unwrap();
+        assert_eq!(pm.handling_fee_fixed, Some(25));
+        assert_eq!(pm.handling_fee_percent, Some(2.5));
+    }
+
+    #[test]
+    fn payment_method_tolerates_null_and_blank_fees() {
+        let raw = r#"{
+            "id": 9,
+            "name": "Manual",
+            "payment": "Manual",
+            "handling_fee_fixed": null,
+            "handling_fee_percent": ""
+        }"#;
+        let pm: PaymentMethod = serde_json::from_str(raw).unwrap();
+        assert_eq!(pm.handling_fee_fixed, None);
+        assert_eq!(pm.handling_fee_percent, None);
+    }
 
     #[test]
     fn order_round_trip_with_minimal_payload() {

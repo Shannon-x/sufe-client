@@ -114,6 +114,38 @@ function plainContent(html: string): string {
     .replace(/&#39;/g, "'");
   return decoded.replace(/\n{3,}/g, "\n\n").trim();
 }
+
+// Xboard panel admins increasingly paste a JSON array
+// `[{"feature":"…","support":true}, …]` into the plan body to get a
+// checklist-style render. Detect that and parse it; otherwise fall back
+// to the HTML→text path above.
+interface PlanFeature {
+  feature: string;
+  support: boolean;
+}
+
+function featuresOf(content: string | null | undefined): PlanFeature[] {
+  if (!content) return [];
+  const trimmed = content.trim();
+  if (!trimmed.startsWith("[")) return [];
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (!Array.isArray(parsed)) return [];
+    const rows: PlanFeature[] = [];
+    for (const item of parsed) {
+      if (!item || typeof item !== "object") continue;
+      const obj = item as Record<string, unknown>;
+      if (typeof obj.feature !== "string") continue;
+      rows.push({
+        feature: obj.feature,
+        support: obj.support !== false, // default true when omitted
+      });
+    }
+    return rows;
+  } catch {
+    return [];
+  }
+}
 </script>
 
 <template>
@@ -180,7 +212,17 @@ function plainContent(html: string): string {
             {{ t("plans.transferEnable", { gb: p.transfer_enable }) }}
           </NText>
 
-          <pre v-if="p.content" class="plan-body">{{ plainContent(p.content) }}</pre>
+          <ul v-if="featuresOf(p.content).length" class="features">
+            <li
+              v-for="(f, i) in featuresOf(p.content)"
+              :key="i"
+              :class="{ 'is-on': f.support, 'is-off': !f.support }"
+            >
+              <span class="check">{{ f.support ? "✓" : "✕" }}</span>
+              <span class="feature-text">{{ f.feature }}</span>
+            </li>
+          </ul>
+          <pre v-else-if="p.content" class="plan-body">{{ plainContent(p.content) }}</pre>
 
           <div v-if="pricesFor(p).length" class="prices">
             <div
@@ -261,6 +303,50 @@ function plainContent(html: string): string {
   font-family: inherit;
   font-size: 13px;
   line-height: 1.65;
+}
+.features {
+  list-style: none;
+  margin: 8px 0 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.features li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.5;
+}
+.features .check {
+  flex: 0 0 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+}
+.features .is-on .check {
+  background: rgba(74, 222, 128, 0.18);
+  color: #4ade80;
+}
+.features .is-off .check {
+  background: rgba(255, 90, 122, 0.18);
+  color: #ff5a7a;
+}
+.features .feature-text {
+  flex: 1;
+  word-break: break-word;
+}
+.features .is-off .feature-text {
+  color: var(--n-text-color-3);
+  text-decoration: line-through;
+  text-decoration-color: rgba(255, 90, 122, 0.4);
 }
 .prices {
   display: grid;

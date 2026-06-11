@@ -51,6 +51,36 @@ pub fn patch_mihomo(
     mixed_port: u16,
     mode: TunnelMode,
 ) -> Result<String> {
+    patch_mihomo_inner(yaml, external_controller, secret, mixed_port, mode, None)
+}
+
+/// Like [`patch_mihomo`] but for a mobile host (Android `VpnService` / iOS NE)
+/// that already owns the TUN file descriptor. When `tun_fd` is `Some`, the
+/// `tun:` block references that fd via `file-descriptor` and turns OFF
+/// `auto-route` / `device` — the host's `VpnService.Builder.establish()`
+/// already assigned the interface address and installed routes, and the
+/// sandbox forbids mihomo from opening `/dev/net/tun` itself. Without this the
+/// Android connect path could never succeed (it asked mihomo to create its own
+/// TUN, which the app sandbox denies).
+pub fn patch_mihomo_with_tun_fd(
+    yaml: &str,
+    external_controller: &str,
+    secret: &str,
+    mixed_port: u16,
+    mode: TunnelMode,
+    tun_fd: Option<i32>,
+) -> Result<String> {
+    patch_mihomo_inner(yaml, external_controller, secret, mixed_port, mode, tun_fd)
+}
+
+fn patch_mihomo_inner(
+    yaml: &str,
+    external_controller: &str,
+    secret: &str,
+    mixed_port: u16,
+    mode: TunnelMode,
+    tun_fd: Option<i32>,
+) -> Result<String> {
     // Empty input -> start from a blank mapping. The fetcher should never hand
     // us a non-mapping document but be defensive.
     let mut doc: Mapping = if yaml.trim().is_empty() {
@@ -91,6 +121,34 @@ pub fn patch_mihomo(
         .cloned()
         .unwrap_or_else(Mapping::new);
     match mode {
+        TunnelMode::Tun if tun_fd.is_some() => {
+            // Mobile fd-mode: the host VpnService/NE already created the TUN,
+            // assigned its address and installed routes. mihomo must adopt the
+            // existing fd and NOT try to create/route a device of its own
+            // (the app sandbox would deny it).
+            let fd = tun_fd.expect("matched tun_fd.is_some()");
+            tun.insert(Value::String("enable".into()), Value::Bool(true));
+            // gVisor user-space stack: the only one that works without the
+            // raw-socket / routing privileges a sandboxed app lacks.
+            tun.insert(Value::String("stack".into()), Value::String("gvisor".into()));
+            tun.insert(
+                Value::String("file-descriptor".into()),
+                Value::Number(fd.into()),
+            );
+            // Host owns routing; mihomo must not touch the system route table.
+            tun.insert(Value::String("auto-route".into()), Value::Bool(false));
+            tun.insert(Value::String("auto-detect-interface".into()), Value::Bool(false));
+            tun.insert(Value::String("mtu".into()), Value::Number(1500.into()));
+            tun.insert(
+                Value::String("dns-hijack".into()),
+                Value::Sequence(vec![
+                    Value::String("any:53".into()),
+                    Value::String("tcp://any:53".into()),
+                ]),
+            );
+            // Deliberately omit `device` and all Linux iproute2/auto-redirect
+            // keys — they're meaningless (and rejected) in fd-mode.
+        }
         TunnelMode::Tun => {
             tun.insert(Value::String("enable".into()), Value::Bool(true));
             // `mixed`: TCP via system stack + UDP via gvisor. The default
@@ -383,6 +441,63 @@ mod tests {
             Value::Mapping(m) => m,
             other => panic!("expected mapping, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn tun_fd_mode_adopts_host_fd_and_disables_auto_route() {
+        // Mobile path: a host-supplied fd must produce a `file-descriptor`
+        // TUN with auto-route OFF and no self-created `device` — otherwise the
+        // Android sandbox denies mihomo's own /dev/net/tun and connect fails.
+        let out =
+            patch_mihomo_with_tun_fd("", "127.0.0.1:9090", "s", 7890, TunnelMode::Tun, Some(42))
+                .unwrap();
+        let m = parse(&out);
+        let tun = match m.get(Value::String("tun".into())).unwrap() {
+            Value::Mapping(t) => t,
+            _ => panic!("tun must be mapping"),
+        };
+        assert_eq!(
+            tun.get(Value::String("enable".into())).unwrap(),
+            &Value::Bool(true)
+        );
+        assert_eq!(
+            tun.get(Value::String("file-descriptor".into()))
+                .unwrap()
+                .as_i64()
+                .unwrap(),
+            42
+        );
+        assert_eq!(
+            tun.get(Value::String("auto-route".into())).unwrap(),
+            &Value::Bool(false)
+        );
+        assert_eq!(
+            tun.get(Value::String("stack".into()))
+                .unwrap()
+                .as_str()
+                .unwrap(),
+            "gvisor"
+        );
+        // Must NOT try to open its own device in fd-mode.
+        assert!(tun.get(Value::String("device".into())).is_none());
+    }
+
+    #[test]
+    fn no_tun_fd_keeps_native_device_mode() {
+        // Desktop path (fd None) is unchanged: native device, auto-route on.
+        let out = patch_mihomo("", "127.0.0.1:9090", "s", 7890, TunnelMode::Tun).unwrap();
+        let m = parse(&out);
+        let tun = m
+            .get(Value::String("tun".into()))
+            .unwrap()
+            .as_mapping()
+            .unwrap();
+        assert!(tun.get(Value::String("file-descriptor".into())).is_none());
+        assert_eq!(
+            tun.get(Value::String("auto-route".into())).unwrap(),
+            &Value::Bool(true)
+        );
+        assert!(tun.get(Value::String("device".into())).is_some());
     }
 
     #[test]

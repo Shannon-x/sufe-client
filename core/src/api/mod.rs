@@ -25,15 +25,16 @@ pub mod guest;
 pub mod notice;
 pub mod order;
 pub mod plan;
+pub(crate) mod serde_helpers;
 pub mod ticket;
 pub mod types;
 pub mod user;
 
-pub use auth::{LoginRequest, RegisterRequest};
+pub use auth::{Captcha, LoginRequest, RegisterRequest};
 pub use client::SubscribeFetch;
 pub use guest::SiteConfig;
 pub use notice::Notice;
-pub use order::{CheckoutResponse, Order, PaymentMethod};
+pub use order::{CheckoutResponse, CouponCheckResult, Order, PaymentMethod};
 pub use plan::Plan;
 pub use ticket::{Ticket, TicketDetail, TicketMessage};
 pub use types::{ApiEnvelope, ApiStatus, AuthResult};

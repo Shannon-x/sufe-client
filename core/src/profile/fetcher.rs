@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::api::HttpClient;
-use crate::error::Result;
+use crate::error::{Result, XboardError};
 use crate::kernel::KernelKind;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +51,18 @@ impl ProfileFetcher {
         let res = match fetch_res {
             Ok(r) => r,
             Err(e) => {
+                // A 4xx "subscription unavailable" is a definitive answer
+                // from the backend (expired / suspended account), NOT a
+                // transient transport failure. Never paper over it with a
+                // stale cache — propagate so the UI can prompt a renewal.
+                // (Overwriting the cache is impossible here too, since we
+                // return before the write.)
+                if matches!(e, XboardError::SubscriptionUnavailable { .. }) {
+                    return Err(e);
+                }
+                // Genuine transport failure (DNS / CDN block / timeout):
+                // the chicken-and-egg "subscribe URL needs the proxy" case.
+                // Fall back to the last good cache if we have one.
                 if let Some(snap) = self.cache_fallback(kind, prev, &target).await {
                     tracing::warn!(error=%e, "subscribe fetch failed, using cached profile");
                     return Ok(snap);
@@ -66,6 +78,16 @@ impl ProfileFetcher {
             if let Some(snap) = self.cache_fallback(kind, prev, &target).await {
                 return Ok(snap);
             }
+        }
+        // A 2xx with an empty body is not a usable subscription — refuse to
+        // clobber a previously-good cache with emptiness, and surface the
+        // condition rather than letting an empty config reach the kernel.
+        if res.body.is_empty() {
+            if let Some(snap) = self.cache_fallback(kind, prev, &target).await {
+                tracing::warn!("subscribe returned empty body, using cached profile");
+                return Ok(snap);
+            }
+            return Err(XboardError::SubscriptionUnavailable { status: res.status });
         }
         tokio::fs::write(&target, &res.body).await?;
         Ok(ProfileSnapshot {

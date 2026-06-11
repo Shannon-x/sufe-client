@@ -49,4 +49,13 @@ impl SystemProxySetter for DefaultSystemProxy {
         cfg.set_system_proxy()
             .map_err(|e| io::Error::other(format!("sysproxy clear: {e}")))
     }
+
+    fn matches(&self, ep: &ProxyEndpoint) -> bool {
+        // If we can't read the live setting, assume it's fine (don't fight
+        // the OS based on a failed read).
+        match sysproxy::Sysproxy::get_system_proxy() {
+            Ok(cur) => cur.enable && cur.host == ep.host && cur.port == ep.port,
+            Err(_) => true,
+        }
+    }
 }

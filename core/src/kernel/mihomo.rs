@@ -22,7 +22,10 @@ use tokio::task::JoinHandle;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_util::io::StreamReader;
 
-use super::driver::{KernelConfig, KernelDriver, KernelKind, LogLine, ProxyGroup, TrafficStats};
+use super::driver::{
+    ConnectionItem, KernelConfig, KernelDriver, KernelKind, LogLine, ProxyGroup, RuleItem,
+    TrafficStats,
+};
 use crate::error::{Result, XboardError};
 
 const LOG_CHANNEL_CAPACITY: usize = 256;
@@ -176,6 +179,69 @@ struct RawConnectionsResp {
     download_total: u64,
     #[serde(rename = "uploadTotal", default)]
     upload_total: u64,
+}
+
+/// Full `/connections` payload including the live connection list.
+#[derive(Debug, Deserialize)]
+struct RawConnectionsList {
+    #[serde(default)]
+    connections: Vec<RawConnection>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawConnection {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    upload: u64,
+    #[serde(default)]
+    download: u64,
+    #[serde(default)]
+    start: String,
+    #[serde(default)]
+    chains: Vec<String>,
+    #[serde(default)]
+    rule: String,
+    #[serde(rename = "rulePayload", default)]
+    rule_payload: String,
+    #[serde(default)]
+    metadata: RawConnMeta,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct RawConnMeta {
+    #[serde(default)]
+    network: String,
+    #[serde(rename = "type", default)]
+    conn_type: String,
+    #[serde(default)]
+    host: String,
+    #[serde(rename = "sourceIP", default)]
+    source_ip: String,
+    #[serde(rename = "destinationIP", default)]
+    destination_ip: String,
+    #[serde(rename = "destinationPort", default)]
+    destination_port: String,
+    #[serde(default)]
+    process: String,
+    #[serde(rename = "processPath", default)]
+    process_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRulesResp {
+    #[serde(default)]
+    rules: Vec<RawRule>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRule {
+    #[serde(rename = "type", default)]
+    kind: String,
+    #[serde(default)]
+    payload: String,
+    #[serde(default)]
+    proxy: String,
 }
 
 fn is_group_kind(kind: &str) -> bool {
@@ -408,6 +474,111 @@ impl KernelDriver for MihomoDriver {
         BroadcastStream::new(rx)
             .filter_map(|res| async move { res.ok() })
             .boxed()
+    }
+
+    async fn connections(&self) -> Result<Vec<ConnectionItem>> {
+        if !self.is_running().await {
+            return Err(XboardError::KernelNotRunning);
+        }
+        let resp: RawConnectionsList = self
+            .with_auth(self.http.get(self.controller_url("/connections")))
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(resp
+            .connections
+            .into_iter()
+            .map(|c| {
+                let m = c.metadata;
+                // Prefer the SNI/host; fall back to the destination IP so the
+                // row is never blank.
+                let host = if !m.host.is_empty() {
+                    m.host.clone()
+                } else {
+                    m.destination_ip.clone()
+                };
+                // `process` is usually the basename already; if only a path
+                // came back, take its last component.
+                let process = if !m.process.is_empty() {
+                    m.process
+                } else {
+                    m.process_path
+                        .rsplit(['/', '\\'])
+                        .next()
+                        .unwrap_or_default()
+                        .to_string()
+                };
+                ConnectionItem {
+                    id: c.id,
+                    upload: c.upload,
+                    download: c.download,
+                    start: c.start,
+                    chains: c.chains,
+                    rule: c.rule,
+                    rule_payload: c.rule_payload,
+                    network: m.network,
+                    conn_type: m.conn_type,
+                    host,
+                    source_ip: m.source_ip,
+                    destination_ip: m.destination_ip,
+                    destination_port: m.destination_port,
+                    process,
+                }
+            })
+            .collect())
+    }
+
+    async fn close_connection(&self, id: &str) -> Result<()> {
+        if !self.is_running().await {
+            return Err(XboardError::KernelNotRunning);
+        }
+        self.with_auth(
+            self.http
+                .delete(self.controller_url(&format!("/connections/{}", urlencoding(id)))),
+        )
+        .timeout(Duration::from_secs(3))
+        .send()
+        .await?
+        .error_for_status()?;
+        Ok(())
+    }
+
+    async fn close_all_connections(&self) -> Result<()> {
+        if !self.is_running().await {
+            return Err(XboardError::KernelNotRunning);
+        }
+        self.with_auth(self.http.delete(self.controller_url("/connections")))
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
+    }
+
+    async fn rules(&self) -> Result<Vec<RuleItem>> {
+        if !self.is_running().await {
+            return Err(XboardError::KernelNotRunning);
+        }
+        let resp: RawRulesResp = self
+            .with_auth(self.http.get(self.controller_url("/rules")))
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        Ok(resp
+            .rules
+            .into_iter()
+            .map(|r| RuleItem {
+                kind: r.kind,
+                payload: r.payload,
+                proxy: r.proxy,
+            })
+            .collect())
     }
 }
 

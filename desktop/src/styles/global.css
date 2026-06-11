@@ -11,13 +11,23 @@ body,
 #app {
   margin: 0;
   padding: 0;
-  height: 100%;
   width: 100%;
+}
+/* No global height/overflow lock — Home.vue self-locks via .home-shell
+   (height: 100vh + overflow: hidden) so the map workspace never grows,
+   while other routes (Plans / Orders / Tickets / Notices) use
+   `min-height: 100vh` on their NLayout shell and rely on body scroll to
+   reveal content past the viewport. Locking the body globally killed
+   that scroll on every non-home route. */
+body {
+  min-height: 100vh;
 }
 
 body {
-  background-color: var(--n-color, #f5f7fb);
-  color: var(--n-text-color, #1f1f1f);
+  /* Match the dark app shell so any pixel that briefly shows through
+     (Naive layout reflow, window resize) doesn't flash white. */
+  background-color: #15121f;
+  color: var(--n-text-color, #f8f7ff);
 }
 
 button,

@@ -6,13 +6,27 @@
 //! direction, framed by `\n`. `serde_json` never emits embedded newlines
 //! in compact mode, so `read_line` on the receiving side is unambiguous.
 //!
-//! Threat model: the socket lives at a path only readable by trusted
-//! groups (root + staff on macOS) — file-system permissions are the
-//! authentication boundary. We add an HMAC over the request body using a
-//! per-install secret stored at a root-owned path; this guards against a
-//! same-machine attacker who somehow obtains group access from racing
-//! the connection. For Phase 1 the HMAC is optional (helpers built before
-//! the secret rotation may omit it); production builds enable it.
+//! Threat model & authentication boundaries (as actually implemented):
+//!
+//! * macOS (`xboard-helper`): the socket is `root:staff` mode `0660`, so only
+//!   the `staff` group can reach it. On top of that the helper reads the
+//!   connecting peer's uid via `SO_PEERCRED` and constrains every privileged
+//!   path operation to directories *that uid owns* under its own Application
+//!   Support tree (`validate_data_path` in the helper), and pins `exec_path`
+//!   to the bundled mihomo binary (`validate_exec_path`). So even a malicious
+//!   `staff` user cannot drive the helper into writing outside their own
+//!   data dir.
+//! * Windows (`xboard-svc`): every connection's client SID is resolved and
+//!   compared against the SID captured at install time — only the installing
+//!   user can issue commands — plus the same path / binary pinning.
+//!
+//! Deferred hardening: a per-install HMAC over each frame (keyed by the
+//! root-owned [`HELPER_SECRET_PATH`]). With the secret necessarily readable
+//! by the same `staff` group that can already reach the socket, an HMAC adds
+//! little over the peercred + ownership checks above; a *per-user* secret
+//! (chowned to each peer uid on first contact) would be the way to make it a
+//! real second factor. Tracked as a follow-up — it is NOT currently enforced,
+//! so don't treat it as a boundary.
 
 use std::path::PathBuf;
 

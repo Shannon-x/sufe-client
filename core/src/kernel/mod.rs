@@ -10,9 +10,16 @@ pub mod manager;
 pub mod mihomo;
 pub mod xray;
 
-pub use driver::{KernelConfig, KernelDriver, KernelKind, LogLine, ProxyGroup, TrafficStats};
-pub use launcher::{DirectLauncher, KernelLauncher, KernelSpawnSpec, LaunchHandle, LauncherError};
-pub use manager::{ConnectStage, ConnectionState, KernelManager, TunnelMode};
+pub use driver::{
+    ConnectionItem, KernelConfig, KernelDriver, KernelKind, LogLine, ProxyGroup, RuleItem,
+    TrafficStats,
+};
+pub use launcher::{
+    DirectLauncher, KernelFailure, KernelLauncher, KernelSpawnSpec, LaunchHandle, LauncherError,
+};
+pub use manager::{
+    ConnectStage, ConnectionState, KernelHealthEvent, KernelManager, TunnelMode,
+};
 pub use mihomo::MihomoDriver;
 pub use xray::XrayDriver;
 

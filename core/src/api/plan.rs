@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::serde_helpers::deserialize_opt_i64_lenient;
 use super::types::de_truthy;
 use super::HttpClient;
 use crate::error::{Result, XboardError};
@@ -30,23 +31,31 @@ pub struct Plan {
     pub transfer_enable: u64,
 
     // Periodic prices — cents, `None` ⇒ that billing cadence isn't sold.
-    #[serde(default)]
+    //
+    // The wire shape is *not* a plain JSON integer: `PlanResource` computes
+    // `(float) $price * 100`, which yields IEEE-754-lossy values like
+    // `1998.9999999999998` for a stored 19.99-yuan plan. Plain `Option<i64>`
+    // rejects any non-integral float, so every common yuan price (19.99,
+    // 9.99, 29.99, …) would break the subscription page. The lenient
+    // helper rounds to the nearest int — the source-of-truth in the panel
+    // DB is integer cents, so the fractional residue is purely noise.
+    #[serde(default, deserialize_with = "deserialize_opt_i64_lenient")]
     pub month_price: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_i64_lenient")]
     pub quarter_price: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_i64_lenient")]
     pub half_year_price: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_i64_lenient")]
     pub year_price: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_i64_lenient")]
     pub two_year_price: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_i64_lenient")]
     pub three_year_price: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_i64_lenient")]
     pub onetime_price: Option<i64>,
 
     /// Mid-period traffic reset (top-up) price.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_i64_lenient")]
     pub reset_price: Option<i64>,
     /// 0 = no auto reset; 1 = monthly; 2 = on first day of month.
     #[serde(default)]
@@ -119,5 +128,28 @@ mod tests {
         let raw = r#"{"id": 1, "renew": "1"}"#;
         let p: Plan = serde_json::from_str(raw).unwrap();
         assert!(p.renew);
+    }
+
+    #[test]
+    fn plan_accepts_php_lossy_float_prices() {
+        // What `PlanResource` actually emits for 19.99 / 9.99 / 29.99 yuan
+        // plans because of `(float) $price * 100`.
+        let raw = r#"{
+            "id": 1,
+            "name": "Lossy",
+            "transfer_enable": 100,
+            "month_price": 1998.9999999999998,
+            "quarter_price": 998.9999999999999,
+            "year_price": 2999.0000000000005,
+            "onetime_price": null,
+            "show": 1,
+            "sell": 1,
+            "renew": 1
+        }"#;
+        let p: Plan = serde_json::from_str(raw).unwrap();
+        assert_eq!(p.month_price, Some(1999));
+        assert_eq!(p.quarter_price, Some(999));
+        assert_eq!(p.year_price, Some(2999));
+        assert_eq!(p.onetime_price, None);
     }
 }

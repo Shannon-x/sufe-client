@@ -19,12 +19,14 @@ import {
   type FormRules,
 } from "naive-ui";
 import { api } from "@/api";
+import { useAuthStore } from "@/stores/auth";
 import { useSiteStore } from "@/stores/site";
 import { formatError } from "@/utils/error";
 import CaptchaWidget from "@/components/CaptchaWidget.vue";
 
 const { t } = useI18n();
 const router = useRouter();
+const auth = useAuthStore();
 const site = useSiteStore();
 const message = useMessage();
 
@@ -89,9 +91,20 @@ async function onSendCode() {
     message.error(t("forget.fillAll"));
     return;
   }
+  if (captchaRef.value?.misconfigured) {
+    message.error(t("captcha.misconfigured"));
+    return;
+  }
   sendingCode.value = true;
   try {
-    await api.sendEmailVerify(email);
+    // sendEmailVerify is captcha-gated on the backend — resolve and pass the
+    // provider tag so the panel's CaptchaService finds the token.
+    const captchaTok = await resolveCaptcha();
+    await api.sendEmailVerify(
+      email,
+      captchaRequired.value ? captchaType.value : undefined,
+      captchaTok,
+    );
     message.success(t("register.codeSent"));
     codeCountdown.value = 60;
     countdownTimer = window.setInterval(() => {
@@ -122,10 +135,20 @@ async function onSubmit() {
   } catch {
     return;
   }
+  if (captchaRef.value?.misconfigured) {
+    message.error(t("captcha.misconfigured"));
+    return;
+  }
   submitting.value = true;
   try {
     const token = await resolveCaptcha();
-    if (captchaRequired.value && captchaType.value !== "recaptcha-v3" && !token) {
+    if (
+      captchaRequired.value &&
+      captchaType.value !== "recaptcha-v3" &&
+      !token &&
+      !captchaRef.value?.unsupported &&
+      !captchaRef.value?.misconfigured
+    ) {
       message.error(t("login.captchaRequired"));
       submitting.value = false;
       return;
@@ -134,15 +157,14 @@ async function onSubmit() {
       email: model.email.trim(),
       password: model.password,
       emailCode: model.emailCode,
-      turnstile: captchaType.value === "turnstile" ? token : undefined,
-      recaptcha:
-        captchaType.value === "recaptcha" || captchaType.value === "recaptcha-v3"
-          ? token
-          : undefined,
+      captchaType: captchaRequired.value ? captchaType.value : undefined,
+      captchaToken: token,
     });
     message.success(t("forget.success"));
     // Don't auto-login — make the user re-enter the new password to confirm
-    // the change took effect.
+    // the change took effect. Clear any stale session first so the user lands
+    // cleanly on the login screen.
+    await auth.logout();
     router.push("/login");
   } catch (e) {
     captchaRef.value?.reset();

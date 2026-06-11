@@ -32,7 +32,7 @@
 //! shorthand). We do the conversion ourselves and stay aligned with the
 //! mihomo subset Xboard panels actually emit.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 
 use serde_json::{json, Map, Value};
 use serde_yaml::Value as YamlValue;
@@ -195,16 +195,29 @@ pub fn patch_singbox(
     });
 
     // ---------- final assembly ----------
+    // Every `rule_set` tag referenced by route/DNS rules MUST be defined under
+    // `route.rule_set[]`, or sing-box ≥1.8 rejects the whole config at startup
+    // ("rule-set [geosite-cn] not found") — which is exactly why the iOS NE
+    // never came up. Gather the referenced tags and emit a remote definition
+    // for each, downloading through the tunnel so it works behind GFW.
+    let dns = default_dns();
+    let rule_set_tags = collect_rule_set_tags(&rules, &dns);
+    let rule_sets = build_rule_sets(&rule_set_tags, &default_target);
+
+    let mut route = Map::new();
+    route.insert("rules".into(), json!(rules));
+    route.insert("auto_detect_interface".into(), json!(true));
+    route.insert("final".into(), json!(default_target));
+    if !rule_sets.is_empty() {
+        route.insert("rule_set".into(), json!(rule_sets));
+    }
+
     let root = json!({
         "log": { "level": "info", "timestamp": true },
-        "dns": default_dns(),
+        "dns": dns,
         "inbounds": inbounds,
         "outbounds": outbounds,
-        "route": {
-            "rules": rules,
-            "auto_detect_interface": true,
-            "final": default_target,
-        },
+        "route": Value::Object(route),
         "experimental": experimental,
     });
 
@@ -575,7 +588,13 @@ fn translate_rules(
                 node.insert("ip_cidr".into(), json!([value]));
             }
             ("GEOIP", _) => {
-                node.insert("geoip".into(), json!([value.to_ascii_lowercase()]));
+                // sing-box ≥1.8 dropped the legacy `geoip` route field in
+                // favour of rule-sets; emit a `geoip-<code>` rule_set ref
+                // (defined under route.rule_set[] during assembly).
+                node.insert(
+                    "rule_set".into(),
+                    json!([format!("geoip-{}", value.to_ascii_lowercase())]),
+                );
             }
             ("GEOSITE", _) => {
                 node.insert(
@@ -623,14 +642,17 @@ fn resolve_target(t: &str, accepted: &HashSet<String>, fallback: &str) -> String
 
 fn default_route_rules(default_target: &str) -> Vec<Value> {
     // Mirror mihomo's default shunt: ads → block, private/CN → direct,
-    // everything else → first selector. Geosite/geoip names match
-    // sing-box's bundled rule-set (geosite-cn, geoip-cn, etc.).
-    let _ = default_target; // referenced via final at the route level
+    // everything else → first selector (the route `final`). Rule-set tags
+    // are defined under route.rule_set[] during assembly; `ip_is_private`
+    // is a built-in predicate so it needs no rule-set. We use the rule_set
+    // form for geoip too (the legacy `geoip` route field was removed in
+    // sing-box 1.8 — using it makes the NE refuse to start).
+    let _ = default_target; // referenced via `final` at the route level
     vec![
         json!({ "rule_set": ["geosite-category-ads-all"], "outbound": "block" }),
         json!({ "ip_is_private": true, "outbound": "direct" }),
         json!({ "rule_set": ["geosite-private", "geosite-cn"], "outbound": "direct" }),
-        json!({ "geoip": ["cn", "private"], "outbound": "direct" }),
+        json!({ "rule_set": ["geoip-cn"], "outbound": "direct" }),
     ]
 }
 
@@ -646,6 +668,56 @@ fn default_dns() -> Value {
         "strategy": "prefer_ipv4",
         "final": "google",
     })
+}
+
+/// Gather every `rule_set` tag referenced under the given route rules and DNS
+/// config. sing-box ≥1.8 fails the *entire* config at load time if any rule
+/// references a tag with no matching `route.rule_set[]` definition, so this
+/// set drives [`build_rule_sets`].
+fn collect_rule_set_tags(route_rules: &[Value], dns: &Value) -> BTreeSet<String> {
+    let mut tags = BTreeSet::new();
+    let mut harvest = |rules: &[Value]| {
+        for r in rules {
+            if let Some(rs) = r.get("rule_set").and_then(Value::as_array) {
+                for t in rs {
+                    if let Some(s) = t.as_str() {
+                        tags.insert(s.to_string());
+                    }
+                }
+            }
+        }
+    };
+    harvest(route_rules);
+    if let Some(dns_rules) = dns.get("rules").and_then(Value::as_array) {
+        harvest(dns_rules);
+    }
+    tags
+}
+
+/// Build `route.rule_set[]` definitions for each referenced tag, pointing at
+/// SagerNet's official compiled (`.srs`) rule-sets. Downloads route through
+/// the tunnel (`download_detour = <primary outbound>`) so they succeed from
+/// networks where GitHub is blocked directly. Unknown tag families are
+/// skipped (none arise in practice — all tags are `geosite-*` / `geoip-*`).
+fn build_rule_sets(tags: &BTreeSet<String>, download_detour: &str) -> Vec<Value> {
+    tags.iter()
+        .filter_map(|tag| {
+            let url = if tag.starts_with("geosite-") {
+                format!("https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/{tag}.srs")
+            } else if tag.starts_with("geoip-") {
+                format!("https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/{tag}.srs")
+            } else {
+                return None;
+            };
+            Some(json!({
+                "type": "remote",
+                "tag": tag,
+                "format": "binary",
+                "url": url,
+                "download_detour": download_detour,
+            }))
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------- //
@@ -864,8 +936,80 @@ rules:
         // First non-MATCH rule
         assert_eq!(rs[0]["domain_suffix"][0], "example.com");
         assert_eq!(rs[0]["outbound"], "PROXY");
-        assert!(rs.iter().any(|r| r["geoip"][0] == "cn"));
+        // GEOIP now translates to a rule_set ref (sing-box ≥1.8), not the
+        // removed legacy `geoip` route field.
+        assert!(rs.iter().any(|r| r["rule_set"][0] == "geoip-cn"));
         assert!(rs.iter().any(|r| r["domain_keyword"][0] == "bank"));
+    }
+
+    /// The load-bearing fix: every `rule_set` tag referenced anywhere in the
+    /// config must have a matching definition under `route.rule_set[]`, or
+    /// sing-box ≥1.8 refuses to start. This guards both the default shunt and
+    /// translated GEOSITE/GEOIP rules + the DNS rule.
+    #[test]
+    fn every_referenced_rule_set_is_defined() {
+        let yaml = r#"
+proxies:
+  - name: P
+    type: ss
+    server: a
+    port: 1
+    cipher: aes-128-gcm
+    password: p
+proxy-groups:
+  - name: PROXY
+    type: select
+    proxies: [P]
+rules:
+  - GEOSITE,youtube,PROXY
+  - GEOIP,JP,DIRECT
+  - MATCH,PROXY
+"#;
+        let out = patch_singbox(yaml, "127.0.0.1:9090", "x", 7890, TunnelMode::Tun).unwrap();
+        let root = parse(&out);
+
+        // Collect every referenced tag (route rules + dns rules).
+        let mut referenced = std::collections::BTreeSet::new();
+        for r in root["route"]["rules"].as_array().unwrap() {
+            if let Some(arr) = r["rule_set"].as_array() {
+                for t in arr {
+                    referenced.insert(t.as_str().unwrap().to_string());
+                }
+            }
+        }
+        for r in root["dns"]["rules"].as_array().unwrap() {
+            if let Some(arr) = r["rule_set"].as_array() {
+                for t in arr {
+                    referenced.insert(t.as_str().unwrap().to_string());
+                }
+            }
+        }
+        assert!(referenced.contains("geosite-youtube"));
+        assert!(referenced.contains("geoip-jp"));
+        assert!(referenced.contains("geosite-cn")); // from the DNS rule
+
+        // Every referenced tag must be defined under route.rule_set[].
+        let defined: std::collections::BTreeSet<String> = root["route"]["rule_set"]
+            .as_array()
+            .expect("route.rule_set[] must exist")
+            .iter()
+            .map(|d| d["tag"].as_str().unwrap().to_string())
+            .collect();
+        for tag in &referenced {
+            assert!(
+                defined.contains(tag),
+                "rule_set '{tag}' referenced but not defined — sing-box would reject the config"
+            );
+            // And each definition must carry a usable remote source.
+            let def = root["route"]["rule_set"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|d| d["tag"] == tag.as_str())
+                .unwrap();
+            assert_eq!(def["type"], "remote");
+            assert!(def["url"].as_str().unwrap().ends_with(".srs"));
+        }
     }
 
     #[test]

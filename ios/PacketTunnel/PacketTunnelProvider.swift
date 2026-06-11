@@ -97,65 +97,78 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 /// upstream sing-box-for-apple uses).
 final class XboardPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol {
     private weak var provider: PacketTunnelProvider?
-    private var reading = false
 
     init(provider: PacketTunnelProvider) {
         self.provider = provider
     }
 
     func detach() {
-        reading = false
+        // Nothing to tear down here: sing-box owns the utun fd it obtained
+        // from `openTun` and closes it during `boxService.close()`.
     }
 
     // MARK: - tun
 
-    /// sing-box calls `openTun` once at startup. We don't actually surface
-    /// an fd — instead we kick off the read-loop on `packetFlow` and send
-    /// each packet to sing-box via `writePacket` on the box side. iOS NE
-    /// doesn't expose the underlying utun fd, so returning -1 is the
-    /// signal to sing-box to use the `writePacket` callback path instead.
+    /// sing-box calls `openTun` once at startup and expects a real file
+    /// descriptor it can read/write packets through directly.
+    ///
+    /// The previous implementation returned -1 and tried to shuttle packets
+    /// via a read-loop into `writeIntoBox`, but `LibboxPlatformInterfaceProtocol`
+    /// has no OS→sing-box inbound entry point — so every inbound packet was
+    /// dropped and the tunnel carried no traffic (it looked "connected" but
+    /// nothing worked). The correct, canonical path (matching
+    /// sing-box-for-apple and wireguard-apple) is to locate the NE's backing
+    /// `utun` socket fd and hand it to sing-box so it does I/O itself.
     func openTun(_ options: LibboxTunOptionsProtocol?) throws -> Int32 {
-        startReading()
-        return -1
+        guard let fd = Self.findUtunFileDescriptor() else {
+            throw NSError(
+                domain: "Xboard", code: -3,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "could not locate the NEPacketTunnelFlow utun file descriptor"]
+            )
+        }
+        return fd
     }
 
-    /// Called by sing-box when it wants to *write back* a decrypted packet
-    /// for the OS to deliver. We hand it to NE.
+    /// sing-box→OS path. Unused once `openTun` returns a real fd (sing-box
+    /// writes packets to the fd directly), but kept as a protocol-conforming
+    /// fallback for Libbox builds that still call it.
     func writePacket(_ packet: Data?) throws {
         guard let provider, let packet else { return }
         provider.writeBack(packet)
     }
 
-    private func startReading() {
-        guard !reading else { return }
-        reading = true
-        readLoop()
-    }
-
-    private func readLoop() {
-        guard reading, let provider else { return }
-        provider.packetFlow.readPackets { [weak self] packets, _ in
-            guard let self else { return }
-            // Hand the batch to sing-box one packet at a time. The
-            // platform interface has no batched-write entry point.
-            for packet in packets {
-                _ = try? self.writeIntoBox(packet)
+    /// Find the file descriptor of the `utun` interface NE created for this
+    /// extension. NE doesn't expose it directly, so we scan our open fds for
+    /// the one whose peer is the `com.apple.net.utun_control` kernel control
+    /// socket — the same approach wireguard-apple uses. Must run inside the
+    /// NE process (the fd table is per-process).
+    private static func findUtunFileDescriptor() -> Int32? {
+        var ctlInfo = ctl_info()
+        withUnsafeMutablePointer(to: &ctlInfo.ctl_name) {
+            $0.withMemoryRebound(to: CChar.self, capacity: MemoryLayout.size(ofValue: $0.pointee)) {
+                _ = strcpy($0, "com.apple.net.utun_control")
             }
-            self.readLoop()
         }
-    }
-
-    /// Push a packet captured from NE into sing-box's tun inbound.
-    private func writeIntoBox(_ packet: Data) throws {
-        // sing-box exposes the inverse of writePacket through
-        // `LibboxBoxService.writePacket(_:)` in some versions; the
-        // canonical path on iOS is via `LibboxPlatformInterfaceProtocol`
-        // delegating both directions through the same callback. If the
-        // installed Libbox.xcframework version doesn't surface an inbound
-        // entry point on the protocol, this is the place to wire it.
-        // For now, drop silently — sing-box will pull from its own fd
-        // when it can; the fallback is a NOOP and keeps the build green.
-        _ = packet
+        for fd: Int32 in 0...1024 {
+            var addr = sockaddr_ctl()
+            var len = socklen_t(MemoryLayout.size(ofValue: addr))
+            let ret = withUnsafeMutablePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    getpeername(fd, $0, &len)
+                }
+            }
+            if ret != 0 || addr.sc_family != AF_SYSTEM {
+                continue
+            }
+            if ctlInfo.ctl_id == 0 {
+                _ = ioctl(fd, CTLIOCGINFO, &ctlInfo)
+            }
+            if addr.sc_id == ctlInfo.ctl_id {
+                return fd
+            }
+        }
+        return nil
     }
 
     // MARK: - interface monitor / auto-detect (delegate to platform)
