@@ -225,7 +225,8 @@ async fn dispatch(state: &HelperState, req: Request, peer_uid: u32) -> Response 
             work_dir,
             cfg_path,
             log_path,
-        } => match start_kernel(state, peer_uid, &exec_path, &work_dir, &cfg_path, &log_path).await {
+        } => match start_kernel(state, peer_uid, &exec_path, &work_dir, &cfg_path, &log_path).await
+        {
             Ok(pid) => Response::Started { pid },
             Err(e) => {
                 tracing::warn!(error = %e, "start_kernel");
@@ -537,7 +538,9 @@ mod tests {
             "/Users/alice/Library/Application Support/com.xboard.client.desktop/kernel"
         )));
         assert!(!is_under_user_app_support(Path::new("/etc")));
-        assert!(!is_under_user_app_support(Path::new("/Users/alice/Desktop")));
+        assert!(!is_under_user_app_support(Path::new(
+            "/Users/alice/Desktop"
+        )));
     }
 
     #[test]

@@ -222,11 +222,13 @@ fn string_field(json: &Value, keys: &[&str]) -> Option<String> {
 }
 
 fn number_field(json: &Value, keys: &[&str]) -> Option<f64> {
-    keys.iter().find_map(|key| dotted_value(json, key)?.as_f64())
+    keys.iter()
+        .find_map(|key| dotted_value(json, key)?.as_f64())
 }
 
 fn dotted_value<'a>(json: &'a Value, key: &str) -> Option<&'a Value> {
-    key.split('.').try_fold(json, |current, part| current.get(part))
+    key.split('.')
+        .try_fold(json, |current, part| current.get(part))
 }
 
 #[tauri::command]
@@ -386,7 +388,8 @@ async fn batch_lookup_geo(ips: &HashSet<IpAddr>) -> HashMap<IpAddr, NodeGeo> {
             .iter()
             .map(|ip| serde_json::json!({ "query": ip.to_string() }))
             .collect();
-        let url = "https://ip-api.com/batch?fields=status,country,countryCode,city,lat,lon,isp,org,query";
+        let url =
+            "https://ip-api.com/batch?fields=status,country,countryCode,city,lat,lon,isp,org,query";
         let resp = match client.post(url).json(&payload).send().await {
             Ok(r) if r.status().is_success() => r,
             _ => continue,
@@ -399,17 +402,23 @@ async fn batch_lookup_geo(ips: &HashSet<IpAddr>) -> HashMap<IpAddr, NodeGeo> {
             if row.status.as_deref() != Some("success") {
                 continue;
             }
-            let Some(query) = row.query.as_deref() else { continue };
-            let Ok(ip) = query.parse::<IpAddr>() else { continue };
-            let (Some(lat), Some(lon)) = (row.lat, row.lon) else { continue };
+            let Some(query) = row.query.as_deref() else {
+                continue;
+            };
+            let Ok(ip) = query.parse::<IpAddr>() else {
+                continue;
+            };
+            let (Some(lat), Some(lon)) = (row.lat, row.lon) else {
+                continue;
+            };
             out.insert(
                 ip,
                 NodeGeo {
                     node: String::new(), // filled in by caller per node
                     ip: query.to_string(),
-                    country: row.country.unwrap_or_else(|| {
-                        row.country_code.clone().unwrap_or_default()
-                    }),
+                    country: row
+                        .country
+                        .unwrap_or_else(|| row.country_code.clone().unwrap_or_default()),
                     city: row.city.unwrap_or_default(),
                     lat,
                     lon,

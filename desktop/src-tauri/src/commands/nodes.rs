@@ -90,7 +90,9 @@ fn parse_clash_proxies(body: &[u8]) -> Vec<NodePreview> {
 
     let mut out = Vec::with_capacity(seq.len());
     for entry in seq {
-        let Some(map) = entry.as_mapping() else { continue };
+        let Some(map) = entry.as_mapping() else {
+            continue;
+        };
         let name = str_field(map, "name");
         let server = str_field(map, "server");
         let kind = str_field(map, "type")
@@ -102,11 +104,18 @@ fn parse_clash_proxies(body: &[u8]) -> Vec<NodePreview> {
             .and_then(|p| u16::try_from(p).ok())
             .unwrap_or(0);
 
-        let (Some(name), Some(server)) = (name, server) else { continue };
+        let (Some(name), Some(server)) = (name, server) else {
+            continue;
+        };
         if name.is_empty() || server.is_empty() || kind.is_empty() {
             continue;
         }
-        out.push(NodePreview { name, kind, server, port });
+        out.push(NodePreview {
+            name,
+            kind,
+            server,
+            port,
+        });
     }
     out
 }

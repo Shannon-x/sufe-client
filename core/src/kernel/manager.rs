@@ -42,7 +42,9 @@ use tokio_stream::wrappers::BroadcastStream;
 use super::driver::{
     ConnectionItem, KernelConfig, KernelDriver, LogLine, ProxyGroup, RuleItem, TrafficStats,
 };
-use super::launcher::{KernelFailure, KernelLauncher, KernelSpawnSpec, LaunchHandle, LauncherError};
+use super::launcher::{
+    KernelFailure, KernelLauncher, KernelSpawnSpec, LaunchHandle, LauncherError,
+};
 use crate::error::{Result, XboardError};
 use crate::profile::{patch_mihomo_with_tun_fd, ProfileFetcher, TunnelMode as ProfileTunnelMode};
 use crate::tunnel::{ProxyEndpoint, SystemProxySetter};
@@ -431,9 +433,10 @@ impl KernelManager {
                         .traffic_err_streak
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                         + 1;
-                    if n == TRAFFIC_FAIL_THRESHOLD && !self
-                        .in_unresponsive
-                        .swap(true, std::sync::atomic::Ordering::SeqCst)
+                    if n == TRAFFIC_FAIL_THRESHOLD
+                        && !self
+                            .in_unresponsive
+                            .swap(true, std::sync::atomic::Ordering::SeqCst)
                     {
                         let _ = self.health.send(KernelHealthEvent::Unresponsive {
                             reason: format!(
@@ -771,11 +774,7 @@ impl KernelManager {
             .store(false, std::sync::atomic::Ordering::SeqCst);
 
         let addr = self.controller_addr.read().clone();
-        let secret = self
-            .controller_secret
-            .read()
-            .clone()
-            .unwrap_or_default();
+        let secret = self.controller_secret.read().clone().unwrap_or_default();
         let health_tx = self.health.clone();
         let unresp = self.in_unresponsive.clone();
         let mut launcher_failures = self.launcher.failure_stream();
@@ -1233,15 +1232,19 @@ mod tests {
     async fn retry_returns_first_ok_immediately() {
         let calls = Arc::new(AtomicU32::new(0));
         let calls_clone = calls.clone();
-        let result: std::result::Result<u32, String> =
-            retry_with_backoff("test", &[10, 20, 30], |_: &String| true, |_attempt| {
+        let result: std::result::Result<u32, String> = retry_with_backoff(
+            "test",
+            &[10, 20, 30],
+            |_: &String| true,
+            |_attempt| {
                 let calls = calls_clone.clone();
                 async move {
                     calls.fetch_add(1, Ordering::SeqCst);
                     Ok::<u32, String>(42)
                 }
-            })
-            .await;
+            },
+        )
+        .await;
         assert_eq!(result.unwrap(), 42);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
@@ -1252,15 +1255,19 @@ mod tests {
     async fn retry_exhausts_then_surfaces_last_error() {
         let calls = Arc::new(AtomicU32::new(0));
         let calls_clone = calls.clone();
-        let result: std::result::Result<u32, String> =
-            retry_with_backoff("test", &[10, 20, 30], |_: &String| true, |attempt| {
+        let result: std::result::Result<u32, String> = retry_with_backoff(
+            "test",
+            &[10, 20, 30],
+            |_: &String| true,
+            |attempt| {
                 let calls = calls_clone.clone();
                 async move {
                     calls.fetch_add(1, Ordering::SeqCst);
                     Err::<u32, String>(format!("boom-{attempt}"))
                 }
-            })
-            .await;
+            },
+        )
+        .await;
         let err = result.unwrap_err();
         // 1 initial + 3 backoffs = 4 attempts; the last error label is 3.
         assert_eq!(calls.load(Ordering::SeqCst), 4);
@@ -1273,8 +1280,11 @@ mod tests {
     async fn retry_recovers_mid_backoff() {
         let calls = Arc::new(AtomicU32::new(0));
         let calls_clone = calls.clone();
-        let result: std::result::Result<u32, String> =
-            retry_with_backoff("test", &[10, 20, 30], |_: &String| true, |attempt| {
+        let result: std::result::Result<u32, String> = retry_with_backoff(
+            "test",
+            &[10, 20, 30],
+            |_: &String| true,
+            |attempt| {
                 let calls = calls_clone.clone();
                 async move {
                     calls.fetch_add(1, Ordering::SeqCst);
@@ -1284,8 +1294,9 @@ mod tests {
                         Ok(7)
                     }
                 }
-            })
-            .await;
+            },
+        )
+        .await;
         assert_eq!(result.unwrap(), 7);
         assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
@@ -1297,15 +1308,19 @@ mod tests {
     async fn retry_short_circuits_non_retryable() {
         let calls = Arc::new(AtomicU32::new(0));
         let calls_clone = calls.clone();
-        let result: std::result::Result<u32, String> =
-            retry_with_backoff("test", &[10, 20, 30], |_: &String| false, |_attempt| {
+        let result: std::result::Result<u32, String> = retry_with_backoff(
+            "test",
+            &[10, 20, 30],
+            |_: &String| false,
+            |_attempt| {
                 let calls = calls_clone.clone();
                 async move {
                     calls.fetch_add(1, Ordering::SeqCst);
                     Err::<u32, String>("fatal".into())
                 }
-            })
-            .await;
+            },
+        )
+        .await;
         assert_eq!(result.unwrap_err(), "fatal");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
@@ -1441,7 +1456,11 @@ mod tests {
         while let Ok(e) = rx.try_recv() {
             events.push(e);
         }
-        assert_eq!(events.len(), 1, "expected exactly one Unresponsive: {events:?}");
+        assert_eq!(
+            events.len(),
+            1,
+            "expected exactly one Unresponsive: {events:?}"
+        );
         assert!(matches!(events[0], KernelHealthEvent::Unresponsive { .. }));
     }
 }

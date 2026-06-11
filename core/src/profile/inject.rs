@@ -130,14 +130,20 @@ fn patch_mihomo_inner(
             tun.insert(Value::String("enable".into()), Value::Bool(true));
             // gVisor user-space stack: the only one that works without the
             // raw-socket / routing privileges a sandboxed app lacks.
-            tun.insert(Value::String("stack".into()), Value::String("gvisor".into()));
+            tun.insert(
+                Value::String("stack".into()),
+                Value::String("gvisor".into()),
+            );
             tun.insert(
                 Value::String("file-descriptor".into()),
                 Value::Number(fd.into()),
             );
             // Host owns routing; mihomo must not touch the system route table.
             tun.insert(Value::String("auto-route".into()), Value::Bool(false));
-            tun.insert(Value::String("auto-detect-interface".into()), Value::Bool(false));
+            tun.insert(
+                Value::String("auto-detect-interface".into()),
+                Value::Bool(false),
+            );
             tun.insert(Value::String("mtu".into()), Value::Number(1500.into()));
             tun.insert(
                 Value::String("dns-hijack".into()),

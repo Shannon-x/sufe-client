@@ -108,16 +108,19 @@ pub fn run() {
             // handles, so all the auth / kernel-readiness logic lives in one
             // place (the Pinia connection store) instead of being duplicated
             // here. The tooltip is kept live by `spawn_state_forwarder`.
-            let connect_item =
-                MenuItem::with_id(app, "tray-connect", "连接", true, None::<&str>)?;
+            let connect_item = MenuItem::with_id(app, "tray-connect", "连接", true, None::<&str>)?;
             let disconnect_item =
                 MenuItem::with_id(app, "tray-disconnect", "断开", true, None::<&str>)?;
             let mode_tun_item =
                 MenuItem::with_id(app, "tray-mode-tun", "TUN 模式", true, None::<&str>)?;
-            let mode_sys_item =
-                MenuItem::with_id(app, "tray-mode-sysproxy", "系统代理模式", true, None::<&str>)?;
-            let logs_item =
-                MenuItem::with_id(app, "tray-logs", "实时日志", true, None::<&str>)?;
+            let mode_sys_item = MenuItem::with_id(
+                app,
+                "tray-mode-sysproxy",
+                "系统代理模式",
+                true,
+                None::<&str>,
+            )?;
+            let logs_item = MenuItem::with_id(app, "tray-logs", "实时日志", true, None::<&str>)?;
             let show_item = MenuItem::with_id(app, "tray-show", "显示主窗口", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "tray-quit", "退出 Xboard", true, None::<&str>)?;
             let sep1 = PredefinedMenuItem::separator(app)?;
@@ -221,11 +224,9 @@ pub fn run() {
                 // guarantees exit never blocks indefinitely (the OS reaps the
                 // child via kill_on_drop regardless).
                 tauri::async_runtime::block_on(async move {
-                    let _ = tokio::time::timeout(
-                        std::time::Duration::from_secs(3),
-                        km.disconnect(),
-                    )
-                    .await;
+                    let _ =
+                        tokio::time::timeout(std::time::Duration::from_secs(3), km.disconnect())
+                            .await;
                 });
             }
             _ => {}

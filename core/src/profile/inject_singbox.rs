@@ -703,7 +703,9 @@ fn build_rule_sets(tags: &BTreeSet<String>, download_detour: &str) -> Vec<Value>
     tags.iter()
         .filter_map(|tag| {
             let url = if tag.starts_with("geosite-") {
-                format!("https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/{tag}.srs")
+                format!(
+                    "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/{tag}.srs"
+                )
             } else if tag.starts_with("geoip-") {
                 format!("https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/{tag}.srs")
             } else {
