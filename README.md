@@ -41,11 +41,11 @@ cargo build -p xboard-svc
 
 Chatwoot 需配置运营方自己的 Public API Inbox，默认关闭；已接入原生消息界面和受信任 REST 桥接，应用关闭后的推送不属于已完成能力。登录、注册、找回密码和发送邮件支持按站点配置启用 Turnstile、reCAPTCHA v2/v3，真实站点密钥仍需设备验收。当前本地 Xboard-sh-1 源码没有可验证的独立充值/签到接口，因此关闭这些入口；线上若安装不同插件，需要补齐该插件的真实契约后启用。
 
-源码默认后端已按运营方指定改为 `https://www.isufe.me`，桌面、Android 与 iOS 读取同一份 Rust 部署配置。2026-09-09 该地址的公共配置 API 返回 HTTP 200 JSON；这仅证明公共接口可达，不证明账号、支付渠道或订阅连接已经验证。此前生成的安装包不会随源码更新地址，需重新编译各平台原生代码并打包；旧域名的历史验收记录保留在交付文档中。
+源码默认后端已按运营方指定改为 `https://www.isufe.me`，桌面、Android 与 iOS 读取同一份 Rust 部署配置。2026-09-09 该地址的公共配置 API 返回 HTTP 200 JSON；这仅证明公共接口可达，不证明账号、支付渠道或订阅连接已经验证。Windows、macOS 两种架构、Linux 与 Android 三 ABI 已重新编译并验包，当前下载包均内嵌新地址。登录接口实际返回“邮箱或密码错误”（HTTP 400），尚未取得有效会话和订阅；需要更正账号信息后继续实网验收。正在运行的旧 Windows 客户端保留原状，需从托盘退出后安装新包。
 
 ## 检查与文档
 
-本轮 Rust 核心回归 **111 项通过、1 项默认忽略**，真实 mihomo 配置校验已另行显式执行。Windows 最终安装器、权限服务和实际 TUN 创建/清理验证通过；Linux 原生构建、25 项 Rust 定向检查、脚本检查、TUN 和两种包的 GUI 启动通过；macOS 两种架构已完成 DMG / app.zip、签名、真实 helper / TUN 及私密配置权限验收。原有桌面 Playwright **22/22**、账单 **3/3** 和生产构建通过，本轮另重跑连接与 CSP 的 10 项回归。iOS **27/27** Swift 语法解析及 **3/3** 验证码模拟检查不替代 Xcode 或设备验收。
+本轮 Rust 核心回归 **111 项通过、1 项默认忽略**，真实 mihomo 配置校验已另行显式执行。Windows 新安装包和内嵌地址校验通过；上一轮已安装版本的权限服务与实际 TUN 创建/清理验证通过，当前新包尚未升级安装；Linux 原生构建、25 项 Rust 定向检查、脚本检查、TUN 和两种包的 GUI 启动通过；macOS 两种架构已完成 DMG / app.zip、签名、真实 helper / TUN 及私密配置权限验收。原有桌面 Playwright **22/22**、账单 **3/3** 和生产构建通过，本轮另重跑连接与 CSP 的 10 项回归。iOS **27/27** Swift 语法解析及 **3/3** 验证码模拟检查不替代 Xcode 或设备验收。
 
 本地产物包括 [Mac Apple Silicon DMG](artifacts/desktop/aarch64-apple-darwin/Sufe_0.1.0_aarch64.dmg)、[Mac Intel DMG](artifacts/desktop/x86_64-apple-darwin/Sufe_0.1.0_x64.dmg)、[Linux deb](artifacts/desktop/x86_64-unknown-linux-gnu/Sufe_0.1.0_amd64.deb) 和 [AppImage](artifacts/desktop/x86_64-unknown-linux-gnu/Sufe_0.1.0_amd64.AppImage)，均为原生 release 构建。另有 [Windows NSIS](artifacts/Sufe_0.1.0_x64-setup.exe) 与 [Android APK](artifacts/Sufe-0.1.0-android-debug.apk)，两者采用 debug 构建。SHA256、具体测试证据与设备验收边界见 [交付记录](docs/delivery-status.md)。macOS/Linux 的原生构建与安装说明见 [平台构建记录](docs/DESKTOP-NATIVE-BUILDS.md)；默认 TUN 的权限与升级机制见 [桌面 TUN](docs/DESKTOP-TUN.md)。
 

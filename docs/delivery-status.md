@@ -1,6 +1,6 @@
 # 本轮交付范围与验证记录
 
-> 本轮桌面默认 TUN 修复：Windows 最终安装包已实际安装并通过 TUN 验证；macOS Apple Silicon / Intel 和 Linux deb/AppImage 均已完成原生构建、包验证与真实 TUN 创建/清理测试。最新结果见 [桌面构建记录](DESKTOP-NATIVE-BUILDS.md) 和 [TUN 说明](DESKTOP-TUN.md)。
+> 本轮后端切换：Windows、macOS Apple Silicon / Intel、Linux 和 Android 安装包均已重新编译并确认内嵌 `https://www.isufe.me`。Windows 用户仍打开旧版，新包尚未升级安装；macOS/Linux 本轮继续通过真实 TUN 创建/清理验收。登录接口返回“邮箱或密码错误”，实网账号验收待更正信息。最新结果见 [桌面构建记录](DESKTOP-NATIVE-BUILDS.md) 和 [TUN 说明](DESKTOP-TUN.md)。
 
 日期：2026-09-09。本记录分别列出已实现代码、已取得的验证结果与尚待完成的设备验收。Android 完整 Debug APK 已生成并完成签名与原生库检查；Windows 原生界面诊断烟测已通过。
 
@@ -24,8 +24,8 @@
 | 礼品卡/邀请/Chatwoot 界面与接口 | 已接入 | 共用代码 | 共用代码 | Compose UI 与共享 FFI 已接入 | SwiftUI 与共享 FFI 已接入 |
 | 自定义规则/订单复核/动态验证码 | 已接入 | 共用代码 | 共用代码 | 原生 UI 与核心调用已接入 | 原生 UI 与核心调用已接入 |
 | 中间件/OSS动态配置壳接线 | 桌面已接入 | 共用代码 | 共用代码 | 共享部署构造已接入 | 共享部署构造已接入 |
-| TUN与网络恢复 | 默认 TUN；实际 SYSTEM 服务、网卡创建/清理、地址冲突拒绝通过 | 默认 TUN；两种架构的真实 root helper、受限 IPC、TUN 创建/清理及签名验证通过 | 默认 TUN；普通用户通过 capability 实际创建/清理网卡 | 需设备VPN数据流验收 | 需签名设备NE验收 |
-| 当前产物与验证 | 最终 debug NSIS 已实际静默安装；权限、内核与安装升级钩子通过 | 两种架构 release DMG / app.zip 已生成并验收，使用 ad-hoc 签名，无 Apple 公证 | 原生 release deb/AppImage 已生成；运行依赖与两包 GUI 启动通过 | 三 ABI Debug APK 已生成，签名/ELF/16 KB 检查通过，设备启动与 VPN 待验收 | Swift 语法检查通过，无 Xcode 编译和 Apple 签名 |
+| TUN与网络恢复 | 默认 TUN；上一轮已安装版本的 SYSTEM 服务、网卡创建/清理及地址冲突拒绝通过 | 默认 TUN；两种架构的真实 root helper、受限 IPC、TUN 创建/清理及签名验证通过 | 默认 TUN；普通用户通过 capability 实际创建/清理网卡 | 需设备VPN数据流验收 | 需签名设备NE验收 |
+| 当前产物与验证 | 新后端 debug NSIS 已重编及解包验证；旧客户端仍运行，新包待托盘退出后安装 | 两种架构 release DMG / app.zip 已生成并验收，使用 ad-hoc 签名，无 Apple 公证 | 原生 release deb/AppImage 已生成；运行依赖与两包 GUI 启动通过 | 三 ABI Debug APK 已生成，签名/ELF/16 KB 检查通过，设备启动与 VPN 待验收 | Swift 语法检查通过，无 Xcode 编译和 Apple 签名 |
 
 iOS 当前固定 Libbox 1.10.7 源码用于兼容现有接口，内核是 sing-box，不能宣称运行 mihomo，也不能据此宣称使用当前受支持或已无漏洞的内核。桌面与移动的核心账户、购买和新增权益功能均有界面接线；各平台仍存在内核、权限、后台运行与发布状态的差异。
 
@@ -33,13 +33,15 @@ iOS 当前固定 Libbox 1.10.7 源码用于兼容现有接口，内核是 sing-b
 
 ## 已取得的独立证据
 
-- 历史记录（默认域名调整前）：旧包的公共配置 `https://imitate.cnqq.de/api/v1/guest/comm/config` 只读GET返回HTTP200和成功信封。is_captcha为0；线上额外返回余额充值插件配置字段，本地源码没有相应路由。当时未尝试登录、注册或产生订单。源码默认现已按运营方指定调整为 `https://www.isufe.me`，下述既有安装包与哈希仍记录域名调整前的构建，需重编后更新交付记录。
+- 历史记录（默认域名调整前）：旧包的公共配置 `https://imitate.cnqq.de/api/v1/guest/comm/config` 只读GET返回HTTP200和成功信封。is_captcha为0；线上额外返回余额充值插件配置字段，本地源码没有相应路由。当时未尝试登录、注册或产生订单。当前默认及下述重新生成的安装包已切换为 `https://www.isufe.me`；旧安装证明单独保留其原 installer SHA。
 - 早期 v1.18.7 下载记录保留于 `ci/checksums/v1.18.7.sha256`；当前桌面/Android 使用官方稳定版 **v1.19.30**，官方 release API digest 固定于 `ci/checksums/v1.19.30.sha256`。
 - Windows 包内 mihomo 与固定官方归档解压内容 SHA256 一致，Wintun 0.14.1 与官方公开 hash 一致且安装在内核旁。后续实际服务/TUN 验证没有改变用户的 Clash、系统代理、默认路由或 DNS。
 - `scripts/install-kernel.py --target x86_64-pc-windows-msvc` 本机执行通过，验证并安装同hash资产。
 - Python加密配置发布工具完成语法验证和独立测试fixture生成，Rust有相应跨语言签名/加密/篡改/过期/项目隔离测试。
-- `codex/tun-native-build` 分支已运行原生构建工作流。macOS 两种架构和 Linux 最终包均来自 commit `3673087379afd5f687e7963a2356d13c87265c86`、[run 34327137901](https://github.com/Shannon-x/sufe-client/actions/runs/34327137901)，只保存 Actions Artifacts，没有创建 tag 或发布 Release。
+- `codex/tun-native-build` 分支已运行原生构建工作流。macOS 两种架构和 Linux 最终包均来自 commit `935b86f94da6900c03b93e3d6789fec868816ec7`、[run 34331473582](https://github.com/Shannon-x/sufe-client/actions/runs/34331473582)，只保存 Actions Artifacts，没有创建 tag 或发布 Release。
 - 五个修改过的Bash脚本通过逐文件 `bash -n`；下载校验函数对真实官方归档通过、对错误内容拒绝。工作区Shell文件改为LF，并新增Git属性防止Windows检出时重新变成CRLF。
+
+- 新后端 `https://www.isufe.me/api/v1/guest/comm/config` 返回 HTTP 200 JSON，客户端真实 Rust 配置类型解析通过。使用运营方提供的信息调用登录 API，后端明确拒绝为“邮箱或密码错误”（HTTP 400）；未获得会话、未读取账户或订阅、未下单或付款。报告 `artifacts/backend-integration.json` 仅保存脱敏状态，无账号密码或 token。
 
 ## 已确认的构建与测试结果
 
@@ -53,14 +55,14 @@ iOS 当前固定 Libbox 1.10.7 源码用于兼容现有接口，内核是 sing-b
 | `npm run build`（desktop） | **通过** | Vue/TypeScript 检查和前端生产构建 |
 | npm 依赖审计 | **0 项已知漏洞** | 本次锁定依赖的审计结果，不代表整个产品没有漏洞 |
 | 生产内容安全策略 | **4/4 通过，包含在上述 22 项** | 三个认证表单显示与空提交校验正常；真实同源脚本的 `Function()` 仍被 CSP 拒绝 |
-| Windows 最终 NSIS 打包及安装 | **通过** | debug 构建；实际静默安装退出码 0，旧服务停止、受保护安装路径与首次服务启动通过，无 Authenticode 签名 |
-| Windows 默认 TUN 服务 | **通过** | 6 项服务权限测试与 2 项提权前路径检查通过；安装后 SYSTEM mihomo v1.19.30 创建/清理网卡，错误地址冲突被拒绝，IPC 权限及控制接口限制通过 |
+| Windows 本轮 NSIS 打包与地址校验 | **通过；尚未升级安装** | debug 构建；实际解包确认新域名、旧域名缺失、GUI 子系统、无诊断端口以及 kernel/service/Wintun 哈希。运行中的用户旧版保留，待托盘退出后安装；无 Authenticode 签名 |
+| Windows 默认 TUN 服务（上一轮已安装包） | **通过** | 6 项服务权限测试与 2 项提权前路径检查通过；安装后 SYSTEM mihomo v1.19.30 创建/清理网卡，错误地址冲突被拒绝，IPC 权限及控制接口限制通过 |
 | Linux 原生构建、包与 TUN | **通过** | 脚本检查和 25 项 Rust 定向检查通过，包含 5 项私密配置权限回归；deb 运行依赖完整，普通用户真实 TUN 创建/清理通过，两包未登录 GUI 均运行 12 秒 |
 | Swift 源码 tree-sitter 解析 | **27/27 通过** | 仅语法解析，不是 Swift 类型检查、链接或 Xcode 编译；证据 `artifacts/ios-swift-source-check.json` |
 | iOS 验证码 JavaScript | **3/3 通过** | 从实际 Swift 源码抽取脚本，模拟三种 provider 回调/过期/错误和 v3 reset；证据 `artifacts/ios-captcha-script-check.json`，不是真实厂商挑战 |
 | Swift/Kotlin UniFFI 绑定生成 | **通过** | 生成成功并核对新增共享方法名称；平台链接和设备运行另行验证 |
 | Windows 原生界面烟测 | **通过（本机诊断构建）** | 真实 WebView2/Tauri、嵌入资源、登录/注册/找回页面、空提交校验、`connection_state`/`fetch_client_config`/`fetch_site_config`；无运行时错误。没有登录账号、提交付款或启动隧道 |
-| Android 最终 Kotlin/原生编译与 APK | **通过** | 最终 Kotlin 1 分 22 秒、assembleDebug 2 分 54 秒；三个 ABI 原生库完成 release 编译，构建副本关键源码哈希与最终冻结一致 |
+| Android 最终 Kotlin/原生编译与 APK | **通过** | 本轮三个 ABI 的 Rust release 与 assembleDebug 通过，成包库确认新域名与当前 mihomo UA；构建副本关键源码哈希与本轮冻结一致，具体耗时与校验见 Android 来源记录 |
 | Android 成品签名/原生库检查 | **通过** | APK v2 Debug 签名和 zipalign 通过；包内 15 个原生库 ELF 类别/机器码通过，64 位全部满足 16 KB 对齐，extractNativeLibs=true |
 | Android 安装/启动/VPN 数据面 | **未执行** | 宿主未开放虚拟化扩展，三次软件模拟均未启动 Android，最终 adb 无设备；未执行真机安装、冷启动、VPN 或支付验收 |
 | macOS 原生构建、签名、helper 与 TUN | **两种架构均通过** | DMG / app.zip 已下载核对 SHA256；每架构私密配置 8 项、ACL 3 项通过；真实 root helper 安装、owner IPC、受限控制接口、TUN 创建/停止清理和默认路由保持通过。未做 Apple 公证 |
@@ -73,15 +75,15 @@ iOS 当前固定 Libbox 1.10.7 源码用于兼容现有接口，内核是 sing-b
 | 文件 | [`artifacts/Sufe_0.1.0_x64-setup.exe`](../artifacts/Sufe_0.1.0_x64-setup.exe) |
 | 类型 | 本地 debug 构建，NSIS 安装包 |
 | 应用签名 | Windows Authenticode `NotSigned`；这是本地测试产物，尚非正式签名发行包 |
-| 大小 | **21,783,284 字节** |
-| SHA256 | `BF1F0E28E048D4EFC5246DD74A7948863C03EAE5D39CD5F1A4E427EAF80A463B` |
+| 大小 | **21,785,706 字节** |
+| SHA256 | `9C19EF4CD54BBE58E8ED7E081B454C2EE60053B4D3827A4EF68D8DD07D3B55CE` |
 | 打包入口 | `scripts/build-local-windows.ps1`；该流程不创建生产更新签名、不发布、不注册特权服务 |
 
 文件大小与 SHA256 已通过本机文件检查复核。后续若重新打包，必须同步更新本表，不能沿用本次哈希。
 
-原生界面烟测使用前一阶段本机诊断构建，额外启用本地回环调试端口。测试时终端以管理员身份运行，WebView2 会忽略环境变量中的调试参数，因此通过单独的本地构建配置启用诊断；没有修改系统策略。测试通过后进程正常退出，最终 NSIS 以默认配置重新构建，不包含该调试端口。界面诊断证据为 `artifacts/native-smoke.json` 和 `artifacts/sufe-native-windows.png`；最终 NSIS 的安装、权限与 TUN 结果见下段独立证据。
+原生界面烟测使用前一阶段本机诊断构建，额外启用本地回环调试端口。测试时终端以管理员身份运行，WebView2 会忽略环境变量中的调试参数，因此通过单独的本地构建配置启用诊断；没有修改系统策略。测试通过后进程正常退出，最终 NSIS 以默认配置重新构建，不包含该调试端口。界面诊断证据为 `artifacts/native-smoke.json` 和 `artifacts/sufe-native-windows.png`；本轮新 NSIS 的包验证与前一轮已安装版本的权限/TUN 证据分别见下段。
 
-最终 NSIS 解包确认主程序为 Windows GUI（2），不含诊断端口，mihomo 与 Wintun 符合固定官方哈希，svc 与最终构建一致。安装后的正向 TUN、地址冲突拒绝和停止清理均实际执行；证据见 `artifacts/windows-package-verification.json`、`windows-nsis-install.json`、`windows-kernel-probe.json`。各平台校验值汇总于 `artifacts/SHA256SUMS`，机器可读记录见 `artifacts/delivery-manifest.json`。
+最终 NSIS 解包确认主程序为 Windows GUI（2），不含诊断端口，mihomo 与 Wintun 符合固定官方哈希，svc 与最终构建一致。前一轮已安装版本的正向 TUN、地址冲突拒绝和停止清理均实际执行；本轮新后端包尚未安装，旧安装证据绑定原 installer SHA，不能视为新包的安装结论。相关证据见 `artifacts/windows-package-verification.json`、`windows-nsis-install.json`、`windows-kernel-probe.json`。各平台校验值汇总于 `artifacts/SHA256SUMS`，机器可读记录见 `artifacts/delivery-manifest.json`。
 
 ### Android 当前测试包
 
@@ -89,8 +91,8 @@ iOS 当前固定 Libbox 1.10.7 源码用于兼容现有接口，内核是 sing-b
 |---|---|
 | 文件 | [`artifacts/Sufe-0.1.0-android-debug.apk`](../artifacts/Sufe-0.1.0-android-debug.apk) |
 | 类型 | 完整三 ABI APK，本机 Android Debug 证书签名 |
-| 大小 | **89,810,877 字节（85.65 MiB）** |
-| SHA256 | `dec308afce17c0b538eece537a07497dfafbb5b8d24acd0e4e4bd1c24cf71c95` |
+| 大小 | **91,792,092 字节（87.54 MiB）** |
+| SHA256 | `40951fb9c8133d7c5abc695fe1149448527796925071de3d5fa84359ea69abce` |
 | 应用/包名 | Sufe / com.xboard.client.debug，版本 0.1.0-debug |
 | 系统范围 | 最低 Android 7.0（API 24），目标 API 34 |
 | ABI 与核心 | arm64-v8a、armeabi-v7a、x86_64；Rust xboard-core 0.1.0、mihomo v1.19.30、JNA 5.18.0 |
@@ -101,7 +103,7 @@ iOS 当前固定 Libbox 1.10.7 源码用于兼容现有接口，内核是 sing-b
 
 ## 仍需真实环境
 
-真实机场账号、有效订阅、支付测试渠道和 Chatwoot API Inbox 仍需运营环境。独立 TUN 创建/清理验证不等于真实节点出口、DNS 和网络切换验收；macOS 的系统授权弹窗及原生 GUI 交互、Linux AppImage 的 polkit 弹窗尚未在实际桌面会话验收。Android 仍需设备 VPN/后台切换，iOS 仍需 Xcode、NetworkExtension 签名及设备验收。构建密钥、客服凭据和生产支付权限不得放入公开仓库。
+本次提供的账号信息被生产登录接口拒绝，需要更正后继续登录、有效订阅与实网流量验收；支付测试渠道和 Chatwoot API Inbox 仍需运营环境。独立 TUN 创建/清理验证不等于真实节点出口、DNS 和网络切换验收；macOS 的系统授权弹窗及原生 GUI 交互、Linux AppImage 的 polkit 弹窗尚未在实际桌面会话验收。Android 仍需设备 VPN/后台切换，iOS 仍需 Xcode、NetworkExtension 签名及设备验收。构建密钥、客服凭据和生产支付权限不得放入公开仓库。
 
 ## 后续复核补充
 

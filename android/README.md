@@ -132,11 +132,11 @@ exact keystore property names.
 
 ## 本次 Windows 构建验证
 
-已输出 [Sufe-0.1.0-android-debug.apk](../artifacts/Sufe-0.1.0-android-debug.apk)，89,810,877 字节，包名 com.xboard.client.debug，最低 Android 7.0（API 24），目标 API 34。APK 使用本机 Android Debug 证书签名；正式发行由 CI 使用运营方签名密钥。
+已输出 [Sufe-0.1.0-android-debug.apk](../artifacts/Sufe-0.1.0-android-debug.apk)，91,792,092 字节，三个 ABI 均确认内嵌 `https://www.isufe.me` 并移除旧默认域名。包名 com.xboard.client.debug，最低 Android 7.0（API 24），目标 API 34。APK 使用本机 Android Debug 证书签名；正式发行由 CI 使用运营方签名密钥。
 
-SHA256：dec308afce17c0b538eece537a07497dfafbb5b8d24acd0e4e4bd1c24cf71c95。
+SHA256：40951fb9c8133d7c5abc695fe1149448527796925071de3d5fa84359ea69abce。
 
-最终源码的三个 Rust ABI 均编译成功；最终 Kotlin 编译耗时 1 分 22 秒，assembleDebug 耗时 2 分 54 秒，均正常退出。直接检查成品 APK，15 个原生库的 ELF 架构与页对齐全部通过，apksigner v2 签名验证及 zipalign 检查通过，包内 extractNativeLibs=true。详细证据见 [Android 构建验收记录](../artifacts/Android-build-verification.md)。
+本轮三个 Rust ABI release 重编分别耗时 1 分 48 秒、1 分 41 秒、1 分 48 秒；assembleDebug 耗时 3 分 2 秒。Kotlin/Java 界面及 FFI 签名未改，编译任务复用，未重新生成 UniFFI 绑定。直接检查成品 APK，15 个原生库的 ELF 架构与页对齐全部通过，apksigner v2 签名及 zipalign 通过，extractNativeLibs=true。AGP 对 mihomo 执行 NDK strip；本轮逐 ABI 复现转换并确认包内哈希一致，官方输入与成包哈希分别记录。详细证据见 [Android 构建验收记录](../artifacts/Android-build-verification.md)。
 
 已安装并验证 Android SDK 34、Build Tools 34、Platform Tools、NDK r27d 和 Gradle 8.7。Windows 中文路径在 Kotlin daemon 的参数传递中可能编码错误，本次使用英文路径构建副本，并设置 kotlin.compiler.execution.strategy=in-process。第三方依赖镜像仅放于本机临时 Gradle init script，未改变仓库正式仓库地址。
 
