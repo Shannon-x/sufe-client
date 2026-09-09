@@ -1,5 +1,7 @@
 //! Pure shell generation shared with host-independent regression tests.
 use std::path::Path;
+#[path = "../../../helper/src/acl_policy.rs"]
+mod acl_policy;
 
 pub const BASE: &str = "/Library/Application Support/com.xboard.client";
 pub const HELPER: &str = "/Library/Application Support/com.xboard.client/xboard-helper";
@@ -22,7 +24,7 @@ safe() {
   mode=$(/usr/bin/stat -f '%Lp' "$1")
   [ $((0$mode & 022)) -eq 0 ] || { echo 'service path is writable by other users' >&2; exit 1; }
   permissions=$(/bin/ls -lde "$1")
-  case "${permissions%% *}" in *+*) echo 'unexpected installation ACL' >&2; exit 1;; esac
+  printf '%s\n' "$permissions" | /usr/bin/env -i PATH=/usr/bin:/bin LC_ALL=C /usr/bin/perl -e __SUFE_DENY_ONLY_ACL__ || { echo 'granting or unrecognized installation ACL' >&2; exit 1; }
 }
 safe /
 safe /Library
@@ -64,7 +66,7 @@ pub fn install_script(
     }
     let helper = helper.to_str().ok_or("helper path is not UTF-8")?;
     let kernel = kernel.to_str().ok_or("kernel path is not UTF-8")?;
-    let mut script = VALIDATE.to_string();
+    let mut script = validation_script();
     script.push_str(&format!(r#"
 base={base}
 if [ ! -e "$base" ]; then /bin/mkdir -m 0755 "$base"; fi
@@ -120,9 +122,16 @@ for file in xboard-helper mihomo owner.uid; do
 done
 if [ -e {plist} ] || [ -L {plist} ]; then safe {plist}; /bin/rm -f {plist}; fi
 "#,
-        validate = VALIDATE,
+        validate = validation_script(),
         base = shell_quote(BASE),
         plist = shell_quote(PLIST)
+    )
+}
+
+fn validation_script() -> String {
+    VALIDATE.replace(
+        "__SUFE_DENY_ONLY_ACL__",
+        &shell_quote(acl_policy::VERIFY_LS_ACL),
     )
 }
 

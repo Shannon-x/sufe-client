@@ -48,6 +48,10 @@ use crate::profile::custom_rules::{apply_custom_rules, validate_rules, CustomRul
 use crate::profile::{patch_mihomo_with_tun_fd, ProfileFetcher, TunnelMode as ProfileTunnelMode};
 use crate::tunnel::{ProxyEndpoint, SystemProxySetter};
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[path = "private_config.rs"]
+mod private_config;
+
 const DEFAULT_CONTROLLER_ADDR: &str = "127.0.0.1:9090";
 const DEFAULT_MIXED_PORT: u16 = 7890;
 const STATE_CHANNEL_CAPACITY: usize = 32;
@@ -622,6 +626,7 @@ impl KernelManager {
             Ok(y) => y,
             Err(e) => return self.fail(final_mode, format!("patch yaml: {e}")),
         };
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         if let Err(e) = tokio::fs::create_dir_all(&self.work_dir).await {
             return self.fail(final_mode, format!("mkdir work_dir: {e}"));
         }
@@ -635,7 +640,16 @@ impl KernelManager {
         };
         let cfg_path = self.work_dir.join("config.yaml");
         let log_path = self.work_dir.join("mihomo.log");
-        if let Err(e) = tokio::fs::write(&cfg_path, &patched).await {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let write_result = {
+            let work_dir = self.work_dir.clone();
+            tokio::task::spawn_blocking(move || private_config::write(&work_dir, patched.as_bytes()))
+                .await
+                .unwrap_or_else(|error| Err(std::io::Error::other(error)))
+        };
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        let write_result = tokio::fs::write(&cfg_path, &patched).await;
+        if let Err(e) = write_result {
             return self.fail(final_mode, format!("write config: {e}"));
         }
 

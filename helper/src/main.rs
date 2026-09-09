@@ -1,5 +1,7 @@
 //! Service-owned macOS mihomo launcher. IPC v2 accepts YAML bytes, never paths.
 
+#[cfg(any(target_os = "macos", test))]
+mod acl_policy;
 #[cfg(unix)]
 mod secure_fs;
 #[cfg(any(target_os = "macos", test))]

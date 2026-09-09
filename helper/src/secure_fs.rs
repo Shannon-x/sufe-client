@@ -32,8 +32,9 @@ pub fn validate_root_chain(path: &Path) -> anyhow::Result<()> {
 
 #[cfg(target_os = "macos")]
 fn reject_acl(path: &Path) -> anyhow::Result<()> {
-    // ACLs can grant writes despite safe POSIX mode bits. Installation removes
-    // helper-owned ACLs; unexpected ancestor ACLs need administrator review.
+    // ACLs can grant writes despite safe POSIX mode bits. System directories
+    // may also carry protective deny ACEs: accept only the shared, strict deny
+    // policy and continue rejecting every grant or unrecognized listing.
     let result = std::process::Command::new("/bin/ls")
         .env_clear()
         .env("LC_ALL", "C")
@@ -44,12 +45,10 @@ fn reject_acl(path: &Path) -> anyhow::Result<()> {
         anyhow::bail!("cannot inspect installation ACL");
     }
     let listing = String::from_utf8(result.stdout)?;
-    if listing
-        .split_whitespace()
-        .next()
-        .map_or(true, |mode| mode.contains('+'))
-    {
-        anyhow::bail!("service path has an extended ACL; reinstall into protected storage");
+    if !crate::acl_policy::verify_listing(listing.as_bytes())? {
+        anyhow::bail!(
+            "service path has a granting or unrecognized ACL; reinstall into protected storage"
+        );
     }
     Ok(())
 }

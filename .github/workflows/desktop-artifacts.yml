@@ -96,6 +96,11 @@ jobs:
       - name: Verify bundle contents and prepare artifacts
         shell: bash
         run: bash ci/scripts/verify-desktop-bundles.sh '${{ matrix.target }}'
+      - name: Verify private runtime configuration permissions
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test --locked --release -p xboard-core --target '${{ matrix.target }}' --lib kernel::manager::private_config::tests 2>&1 | tee 'artifacts/desktop/${{ matrix.target }}/private-config-tests.txt'
       - name: Test native Linux capability and TUN readiness gates
         if: runner.os == 'Linux'
         shell: bash

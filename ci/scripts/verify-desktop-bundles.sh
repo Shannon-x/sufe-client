@@ -16,6 +16,8 @@ printf 'Source: %s\nTarget: %s\nKernel: %s\n' "$(git -C "$ROOT" rev-parse HEAD)"
 
 case "$TRIPLE" in
   aarch64-apple-darwin|x86_64-apple-darwin)
+    rustc --edition 2021 --test "$ROOT/helper/src/acl_policy.rs" -o "$TMP/macos-acl-tests"
+    "$TMP/macos-acl-tests" | tee "$OUT/macos-acl-tests.txt"
     APP="${BUNDLES}/macos/Sufe.app"
     ARCH=x86_64
     [[ "$TRIPLE" == aarch64-* ]] && ARCH=arm64
