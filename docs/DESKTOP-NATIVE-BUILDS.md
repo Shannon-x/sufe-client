@@ -14,14 +14,22 @@
 
 ## 本次产物记录
 
-Linux 最终包已在 [run 34311212645](https://github.com/Shannon-x/sufe-client/actions/runs/34311212645) 的 Linux job 构建并验证成功，源码为 `46440c6704cd755aa62dce5133ade0e1aec6b7f3`。18 项脚本检查、20 项 Linux Rust 检查全部通过。deb 自动依赖包含 WebKitGTK 4.1、GTK 3、ayatana appindicator、libcap2-bin 与 iproute2；已验证普通用户内核实际创建和清理 TUN，两种包均完成 12 秒 GUI 启动检查。
+三个目标均在 [run 34327137901](https://github.com/Shannon-x/sufe-client/actions/runs/34327137901) 完成原生构建与验收，最终源码为 `3673087379afd5f687e7963a2356d13c87265c86`。全部安装包已下载到本地并核对 GitHub artifact digest 和包内 `SHA256SUMS`。
 
-| Linux 安装文件 | 大小 | SHA256 |
-| --- | ---: | --- |
-| [deb](../artifacts/desktop/x86_64-unknown-linux-gnu/Sufe_0.1.0_amd64.deb) | 24,861,546 字节 | `40becc3fd737fc73e857235faf8357510abeea6dfe11c1241381375ef4633d6d` |
-| [AppImage](../artifacts/desktop/x86_64-unknown-linux-gnu/Sufe_0.1.0_amd64.AppImage) | 100,276,728 字节 | `559f0d1ab3a031b514320d63ec9bd69fd4828f4d2b73a2f89788fde4bf4d2f6b` |
+两种 Mac 均通过实际 root helper 安装、受限 IPC/控制接口、TUN 网卡创建与停止清理、完整侧车签名与哈希检查；每种架构的私密配置 8 项、ACL 解析 3 项测试通过。Linux 通过实际普通用户 capability TUN 和两种包的 GUI 启动检查；私密配置 5 项、capability 2 项、配置注入 15 项、launcher 3 项测试通过。各平台脚本检查也通过，详细计数保存在各自产物来源记录中。
 
-下载文件保留于 `artifacts/desktop/x86_64-unknown-linux-gnu`，同目录的 `delivery-provenance.json`、`verification.txt`、`linux-tun-smoke.json` 记录来源与实际检查。建议通过 `sudo apt install ./Sufe_0.1.0_amd64.deb` 安装依赖。AppImage 下载后先执行 `chmod +x Sufe_0.1.0_amd64.AppImage`。
+| 平台 | 安装文件 | 字节数 | SHA256 |
+| --- | --- | ---: | --- |
+| Linux x64 | [Sufe_0.1.0_amd64.deb](../artifacts/desktop/x86_64-unknown-linux-gnu/Sufe_0.1.0_amd64.deb) | 24,864,492 | `66582fbf213b949a93c76bda41cdd4c606b3094e63361d3e7337f145c323fac6` |
+| Linux x64 | [Sufe_0.1.0_amd64.AppImage](../artifacts/desktop/x86_64-unknown-linux-gnu/Sufe_0.1.0_amd64.AppImage) | 100,276,728 | `f660016666794740897eecaa84199367e7fc4338ceea23c7c3269cde24961b3c` |
+| Mac Apple Silicon | [Sufe_0.1.0_aarch64.dmg](../artifacts/desktop/aarch64-apple-darwin/Sufe_0.1.0_aarch64.dmg) | 23,455,979 | `c0ed66c108378c6908b8a3c3ac04073332fb503b379eb73efdc0cdd0ae0a19d2` |
+| Mac Apple Silicon | [Sufe-aarch64-apple-darwin.app.zip](../artifacts/desktop/aarch64-apple-darwin/Sufe-aarch64-apple-darwin.app.zip) | 23,436,484 | `4e6a307757c26c8bd93f07dc40eb28a9e3b81871ea6f4ca6fa0cf11122f24bd0` |
+| Mac Intel | [Sufe_0.1.0_x64.dmg](../artifacts/desktop/x86_64-apple-darwin/Sufe_0.1.0_x64.dmg) | 25,404,641 | `7fc4d0bbd1e02288cc164e2ba61f37100f54f068c1456ab1d7e0e390db544cb5` |
+| Mac Intel | [Sufe-x86_64-apple-darwin.app.zip](../artifacts/desktop/x86_64-apple-darwin/Sufe-x86_64-apple-darwin.app.zip) | 25,437,182 | `8c70db2d695b540fd936d134da4616dee286731f6553f7847916e3ae799898a8` |
+
+每个目标目录的 `delivery-provenance.json`、`verification.txt`、`private-config-tests.txt` 和 TUN 烟测报告记录来源与实测结果。Mac 推荐打开对应架构 DMG，将 Sufe 拖入 Applications；`.app.zip` 是保留权限的同一应用备份。首次连接由系统请求管理员授权安装专用 helper。当前使用 ad-hoc 签名，未做 Apple 公证。
+
+Linux 推荐通过 `sudo apt install ./Sufe_0.1.0_amd64.deb` 安装依赖。AppImage 下载后先执行 `chmod +x Sufe_0.1.0_amd64.AppImage`；首次 TUN 授权要求见下文。
 
 ## 产物必须通过的检查
 

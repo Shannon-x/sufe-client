@@ -7,7 +7,7 @@
 | 平台 | 界面/核心 | 当前范围 | 验收边界 |
 |---|---|---|---|
 | Windows | Vue/Tauri + mihomo | 桌面业务界面；默认 TUN，首次连接安装专用权限服务；保留手动系统代理 | perMachine 安装到 Program Files；真实账号支付与订阅仍需对应环境 |
-| macOS | 同一 Vue/Tauri + mihomo | 共用桌面代码；默认 TUN，首次连接系统授权安装 helper | Apple Silicon / Intel 原生构建流程已配置；构建结果见平台记录，尚无 Apple 公证 |
+| macOS | 同一 Vue/Tauri + mihomo | 共用桌面代码；默认 TUN，首次连接系统授权安装 helper | Apple Silicon / Intel 原生 DMG 与 app.zip 已构建，实际 helper / TUN 验证通过；尚无 Apple 公证 |
 | Linux | 同一 Vue/Tauri + mihomo | 共用桌面代码；默认 TUN，deb 自动授予内核网络权限，AppImage 一次 polkit 授权 | 原生 deb / AppImage 构建与启动验证结果见平台记录 |
 | Android | Compose + Rust + mihomo | 登录/节点/VPN、套餐/订单、公告/工单、礼品卡/邀请、规则、原生客服和验证码 | 三 ABI APK 编译、签名、ELF/16 KB 检查通过；仍需设备启动、真实订阅、VPN 数据面与运营业务验收 |
 | iOS | SwiftUI + NetworkExtension + **sing-box/Libbox** | 同类原生业务入口、订单复核、验证码及 PacketTunnel 适配 | 27 个 Swift 文件通过语法解析；无 Xcode 类型编译与 Apple 签名，兼容内核仍需升级/真机验证 |
@@ -45,9 +45,9 @@ Chatwoot 需配置运营方自己的 Public API Inbox，默认关闭；已接入
 
 ## 检查与文档
 
-本轮 Rust 核心回归 **111 项通过、1 项默认忽略**，真实 mihomo 配置校验已另行显式执行。Windows 最终安装器、权限服务和实际 TUN 创建/清理验证通过；Linux 原生构建、38 项定向检查、TUN 和两种包的 GUI 启动通过。原有桌面 Playwright **22/22**、账单 **3/3** 和生产构建通过，本轮另重跑连接与 CSP 的 10 项回归。iOS **27/27** Swift 语法解析及 **3/3** 验证码模拟检查不替代 Xcode 或设备验收。
+本轮 Rust 核心回归 **111 项通过、1 项默认忽略**，真实 mihomo 配置校验已另行显式执行。Windows 最终安装器、权限服务和实际 TUN 创建/清理验证通过；Linux 原生构建、25 项 Rust 定向检查、脚本检查、TUN 和两种包的 GUI 启动通过；macOS 两种架构已完成 DMG / app.zip、签名、真实 helper / TUN 及私密配置权限验收。原有桌面 Playwright **22/22**、账单 **3/3** 和生产构建通过，本轮另重跑连接与 CSP 的 10 项回归。iOS **27/27** Swift 语法解析及 **3/3** 验证码模拟检查不替代 Xcode 或设备验收。
 
-本地审阅包为 [Windows NSIS](artifacts/Sufe_0.1.0_x64-setup.exe) 与 [Android APK](artifacts/Sufe-0.1.0-android-debug.apk)，均采用 debug 构建。SHA256、具体测试证据与设备验收边界见 [交付记录](docs/delivery-status.md)。macOS/Linux 的原生构建与安装说明见 [平台构建记录](docs/DESKTOP-NATIVE-BUILDS.md)；默认 TUN 的权限与升级机制见 [桌面 TUN](docs/DESKTOP-TUN.md)。
+本地产物包括 [Mac Apple Silicon DMG](artifacts/desktop/aarch64-apple-darwin/Sufe_0.1.0_aarch64.dmg)、[Mac Intel DMG](artifacts/desktop/x86_64-apple-darwin/Sufe_0.1.0_x64.dmg)、[Linux deb](artifacts/desktop/x86_64-unknown-linux-gnu/Sufe_0.1.0_amd64.deb) 和 [AppImage](artifacts/desktop/x86_64-unknown-linux-gnu/Sufe_0.1.0_amd64.AppImage)，均为原生 release 构建。另有 [Windows NSIS](artifacts/Sufe_0.1.0_x64-setup.exe) 与 [Android APK](artifacts/Sufe-0.1.0-android-debug.apk)，两者采用 debug 构建。SHA256、具体测试证据与设备验收边界见 [交付记录](docs/delivery-status.md)。macOS/Linux 的原生构建与安装说明见 [平台构建记录](docs/DESKTOP-NATIVE-BUILDS.md)；默认 TUN 的权限与升级机制见 [桌面 TUN](docs/DESKTOP-TUN.md)。
 
 ```text
 cargo test -p xboard-core --lib

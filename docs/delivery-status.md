@@ -1,6 +1,6 @@
 # 本轮交付范围与验证记录
 
-> 本轮桌面默认 TUN 修复：Windows 最终安装包已实际安装并通过 TUN 验证；Linux deb/AppImage 已在原生 runner 构建并完成验证。macOS 两种架构正在完成签名和 helper 验证。最新结果见 [桌面构建记录](DESKTOP-NATIVE-BUILDS.md) 和 [TUN 说明](DESKTOP-TUN.md)。
+> 本轮桌面默认 TUN 修复：Windows 最终安装包已实际安装并通过 TUN 验证；macOS Apple Silicon / Intel 和 Linux deb/AppImage 均已完成原生构建、包验证与真实 TUN 创建/清理测试。最新结果见 [桌面构建记录](DESKTOP-NATIVE-BUILDS.md) 和 [TUN 说明](DESKTOP-TUN.md)。
 
 日期：2026-09-09。本记录分别列出已实现代码、已取得的验证结果与尚待完成的设备验收。Android 完整 Debug APK 已生成并完成签名与原生库检查；Windows 原生界面诊断烟测已通过。
 
@@ -24,8 +24,8 @@
 | 礼品卡/邀请/Chatwoot 界面与接口 | 已接入 | 共用代码 | 共用代码 | Compose UI 与共享 FFI 已接入 | SwiftUI 与共享 FFI 已接入 |
 | 自定义规则/订单复核/动态验证码 | 已接入 | 共用代码 | 共用代码 | 原生 UI 与核心调用已接入 | 原生 UI 与核心调用已接入 |
 | 中间件/OSS动态配置壳接线 | 桌面已接入 | 共用代码 | 共用代码 | 共享部署构造已接入 | 共享部署构造已接入 |
-| TUN与网络恢复 | 默认 TUN；实际 SYSTEM 服务、网卡创建/清理、地址冲突拒绝通过 | 默认 TUN；受保护 helper 与签名验证正在原生 CI 验收 | 默认 TUN；普通用户通过 capability 实际创建/清理网卡 | 需设备VPN数据流验收 | 需签名设备NE验收 |
-| 当前产物与验证 | 最终 debug NSIS 已实际静默安装；权限、内核与安装升级钩子通过 | 两种架构正在完成原生 CI 验收，使用 ad-hoc 签名 | 原生 release deb/AppImage 已生成；运行依赖与两包 GUI 启动通过 | 三 ABI Debug APK 已生成，签名/ELF/16 KB 检查通过，设备启动与 VPN 待验收 | Swift 语法检查通过，无 Xcode 编译和 Apple 签名 |
+| TUN与网络恢复 | 默认 TUN；实际 SYSTEM 服务、网卡创建/清理、地址冲突拒绝通过 | 默认 TUN；两种架构的真实 root helper、受限 IPC、TUN 创建/清理及签名验证通过 | 默认 TUN；普通用户通过 capability 实际创建/清理网卡 | 需设备VPN数据流验收 | 需签名设备NE验收 |
+| 当前产物与验证 | 最终 debug NSIS 已实际静默安装；权限、内核与安装升级钩子通过 | 两种架构 release DMG / app.zip 已生成并验收，使用 ad-hoc 签名，无 Apple 公证 | 原生 release deb/AppImage 已生成；运行依赖与两包 GUI 启动通过 | 三 ABI Debug APK 已生成，签名/ELF/16 KB 检查通过，设备启动与 VPN 待验收 | Swift 语法检查通过，无 Xcode 编译和 Apple 签名 |
 
 iOS 当前固定 Libbox 1.10.7 源码用于兼容现有接口，内核是 sing-box，不能宣称运行 mihomo，也不能据此宣称使用当前受支持或已无漏洞的内核。桌面与移动的核心账户、购买和新增权益功能均有界面接线；各平台仍存在内核、权限、后台运行与发布状态的差异。
 
@@ -38,7 +38,7 @@ iOS 当前固定 Libbox 1.10.7 源码用于兼容现有接口，内核是 sing-b
 - Windows 包内 mihomo 与固定官方归档解压内容 SHA256 一致，Wintun 0.14.1 与官方公开 hash 一致且安装在内核旁。后续实际服务/TUN 验证没有改变用户的 Clash、系统代理、默认路由或 DNS。
 - `scripts/install-kernel.py --target x86_64-pc-windows-msvc` 本机执行通过，验证并安装同hash资产。
 - Python加密配置发布工具完成语法验证和独立测试fixture生成，Rust有相应跨语言签名/加密/篡改/过期/项目隔离测试。
-- `codex/tun-native-build` 分支已运行原生构建工作流。Linux 最终包来自 commit `46440c6704cd755aa62dce5133ade0e1aec6b7f3`、[run 34311212645](https://github.com/Shannon-x/sufe-client/actions/runs/34311212645)，只保存 Actions Artifacts，没有创建 tag 或发布 Release。
+- `codex/tun-native-build` 分支已运行原生构建工作流。macOS 两种架构和 Linux 最终包均来自 commit `3673087379afd5f687e7963a2356d13c87265c86`、[run 34327137901](https://github.com/Shannon-x/sufe-client/actions/runs/34327137901)，只保存 Actions Artifacts，没有创建 tag 或发布 Release。
 - 五个修改过的Bash脚本通过逐文件 `bash -n`；下载校验函数对真实官方归档通过、对错误内容拒绝。工作区Shell文件改为LF，并新增Git属性防止Windows检出时重新变成CRLF。
 
 ## 已确认的构建与测试结果
@@ -55,7 +55,7 @@ iOS 当前固定 Libbox 1.10.7 源码用于兼容现有接口，内核是 sing-b
 | 生产内容安全策略 | **4/4 通过，包含在上述 22 项** | 三个认证表单显示与空提交校验正常；真实同源脚本的 `Function()` 仍被 CSP 拒绝 |
 | Windows 最终 NSIS 打包及安装 | **通过** | debug 构建；实际静默安装退出码 0，旧服务停止、受保护安装路径与首次服务启动通过，无 Authenticode 签名 |
 | Windows 默认 TUN 服务 | **通过** | 6 项服务权限测试与 2 项提权前路径检查通过；安装后 SYSTEM mihomo v1.19.30 创建/清理网卡，错误地址冲突被拒绝，IPC 权限及控制接口限制通过 |
-| Linux 原生构建、包与 TUN | **通过** | 18 项脚本检查和 20 项 Rust 定向检查；deb 运行依赖完整，普通用户真实 TUN 创建/清理通过，两包未登录 GUI 均运行 12 秒 |
+| Linux 原生构建、包与 TUN | **通过** | 脚本检查和 25 项 Rust 定向检查通过，包含 5 项私密配置权限回归；deb 运行依赖完整，普通用户真实 TUN 创建/清理通过，两包未登录 GUI 均运行 12 秒 |
 | Swift 源码 tree-sitter 解析 | **27/27 通过** | 仅语法解析，不是 Swift 类型检查、链接或 Xcode 编译；证据 `artifacts/ios-swift-source-check.json` |
 | iOS 验证码 JavaScript | **3/3 通过** | 从实际 Swift 源码抽取脚本，模拟三种 provider 回调/过期/错误和 v3 reset；证据 `artifacts/ios-captcha-script-check.json`，不是真实厂商挑战 |
 | Swift/Kotlin UniFFI 绑定生成 | **通过** | 生成成功并核对新增共享方法名称；平台链接和设备运行另行验证 |
@@ -63,7 +63,7 @@ iOS 当前固定 Libbox 1.10.7 源码用于兼容现有接口，内核是 sing-b
 | Android 最终 Kotlin/原生编译与 APK | **通过** | 最终 Kotlin 1 分 22 秒、assembleDebug 2 分 54 秒；三个 ABI 原生库完成 release 编译，构建副本关键源码哈希与最终冻结一致 |
 | Android 成品签名/原生库检查 | **通过** | APK v2 Debug 签名和 zipalign 通过；包内 15 个原生库 ELF 类别/机器码通过，64 位全部满足 16 KB 对齐，extractNativeLibs=true |
 | Android 安装/启动/VPN 数据面 | **未执行** | 宿主未开放虚拟化扩展，三次软件模拟均未启动 Android，最终 adb 无设备；未执行真机安装、冷启动、VPN 或支付验收 |
-| macOS 宿主构建 | **验证进行中** | Apple Silicon / Intel 原生 helper 编译已通过，正在完成签名与成包验收 |
+| macOS 原生构建、签名、helper 与 TUN | **两种架构均通过** | DMG / app.zip 已下载核对 SHA256；每架构私密配置 8 项、ACL 3 项通过；真实 root helper 安装、owner IPC、受限控制接口、TUN 创建/停止清理和默认路由保持通过。未做 Apple 公证 |
 | iOS Xcode/Apple 签名 | **未执行** | Windows 环境没有执行 Xcode 类型编译、NetworkExtension 签名或 iPhone VPN 验收 |
 
 ### Windows 当前审阅包
@@ -79,7 +79,7 @@ iOS 当前固定 Libbox 1.10.7 源码用于兼容现有接口，内核是 sing-b
 
 文件大小与 SHA256 已通过本机文件检查复核。后续若重新打包，必须同步更新本表，不能沿用本次哈希。
 
-原生烟测使用与交付源码一致、额外启用本地回环调试端口的诊断构建。当前终端以管理员身份运行，WebView2 会忽略环境变量中的调试参数，因此通过单独的本地构建配置启用诊断；没有修改系统策略。测试通过后进程正常退出，最终 NSIS 以默认配置重新构建，不包含该调试端口。证据为 `artifacts/native-smoke.json` 和 `artifacts/sufe-native-windows.png`；这不是对最终安装器所有安装/升级行为的验证。
+原生界面烟测使用前一阶段本机诊断构建，额外启用本地回环调试端口。测试时终端以管理员身份运行，WebView2 会忽略环境变量中的调试参数，因此通过单独的本地构建配置启用诊断；没有修改系统策略。测试通过后进程正常退出，最终 NSIS 以默认配置重新构建，不包含该调试端口。界面诊断证据为 `artifacts/native-smoke.json` 和 `artifacts/sufe-native-windows.png`；最终 NSIS 的安装、权限与 TUN 结果见下段独立证据。
 
 最终 NSIS 解包确认主程序为 Windows GUI（2），不含诊断端口，mihomo 与 Wintun 符合固定官方哈希，svc 与最终构建一致。安装后的正向 TUN、地址冲突拒绝和停止清理均实际执行；证据见 `artifacts/windows-package-verification.json`、`windows-nsis-install.json`、`windows-kernel-probe.json`。各平台校验值汇总于 `artifacts/SHA256SUMS`，机器可读记录见 `artifacts/delivery-manifest.json`。
 
@@ -101,14 +101,14 @@ iOS 当前固定 Libbox 1.10.7 源码用于兼容现有接口，内核是 sing-b
 
 ## 仍需真实环境
 
-真实机场账号、有效订阅、支付测试渠道和 Chatwoot API Inbox 仍需运营环境。独立 TUN 创建/清理验证不等于真实节点出口、DNS 和网络切换验收；Linux AppImage 的 polkit 弹窗尚未在实际桌面会话验收。Android 仍需设备 VPN/后台切换，iOS 仍需 Xcode、NetworkExtension 签名及设备验收。构建密钥、客服凭据和生产支付权限不得放入公开仓库。
+真实机场账号、有效订阅、支付测试渠道和 Chatwoot API Inbox 仍需运营环境。独立 TUN 创建/清理验证不等于真实节点出口、DNS 和网络切换验收；macOS 的系统授权弹窗及原生 GUI 交互、Linux AppImage 的 polkit 弹窗尚未在实际桌面会话验收。Android 仍需设备 VPN/后台切换，iOS 仍需 Xcode、NetworkExtension 签名及设备验收。构建密钥、客服凭据和生产支付权限不得放入公开仓库。
 
 ## 后续复核补充
 
 - 移动 UI 已调用共享配置、订单详情、礼品卡、邀请、规则和 Chatwoot 接口。Android 使用周期券检查接口；iOS 下单时携带优惠码和周期，由后端校验并在订单详情中展示最终优惠。详细字段见 [移动接口契约](mobile-ffi-contract.md)。
 - 桌面 AppState 本轮默认 Tun；首次内核初始化采用原子 get-or-init，避免并发产生无法管理的第二个实例。连接/重连串行且以取消代数隔离登出中的请求；所有正常退出入口均清理内核与系统代理。异常强杀无法保证 Rust 清理函数执行，不能将正常退出修复解释为 SIGKILL 自动恢复。
 - 功能开关在受保护操作前按五分钟刷新；关闭自定义规则会停止下一次连接注入并保留用户保存内容。
-- Windows v1.19.30 常规/compatible 官方归档已按 GitHub release API 的 SHA256 digest 验证并缓存。该下载过程未覆盖旧 sidecar；随后主任务隔离烟测通过，默认升级为 v1.19.30 compatible，并由打包脚本安装。macOS/Linux v1.19.30 官方 digest已登记，未据此宣称系统验证通过。
+- Windows v1.19.30 常规/compatible 官方归档已按 GitHub release API 的 SHA256 digest 验证并缓存。该下载过程未覆盖旧 sidecar；随后主任务隔离烟测通过，默认升级为 v1.19.30 compatible，并由打包脚本安装。macOS/Linux v1.19.30 官方 digest 已固定，后续最终原生包和实际 TUN 验收也已完成。
 - Android 默认内核更新为 v1.19.30；CI 增加最终签名 APK 原生库完整性与 64 位 ELF 16 KiB 对齐检查。32 位 ARM ELF 对齐按平台要求另验，不能将 64 位结果套用于所有 ABI。
 - 原 update-server 文档错误宣称 Android 已有启动轮询/强制升级，已改为仅分发元数据。
 - Windows 原生烟测发现并修复生产登录空白页：Vue I18n 原本运行时调用 `new Function`，与原生 CSP 冲突；改用官方支持的 JIT AST 解释执行，保留消息编译器，未放宽 CSP、未新增依赖。修复后独立生产 CSP 4 项及原有 18 项回归全部通过。
