@@ -57,9 +57,8 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         UIRequiresFullScreen: false
-        # Default backend; overridable at runtime via the secure-store key
-        # "xboard.backend_base_url" (no in-app UI for it).
-        XboardDefaultBackendURL: "https://imitate.cnqq.de"
+        # Trusted backend configuration is compiled into xboard-core and read
+        # through Client.forDeployment; Info.plist does not override it.
         # Surfaces in Settings → VPN. Apple shows this string verbatim.
         NEAppProxyEnabled: false
     entitlements:

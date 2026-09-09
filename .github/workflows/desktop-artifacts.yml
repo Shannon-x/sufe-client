@@ -96,6 +96,9 @@ jobs:
       - name: Verify bundle contents and prepare artifacts
         shell: bash
         run: bash ci/scripts/verify-desktop-bundles.sh '${{ matrix.target }}'
+      - name: Verify compiled operator deployment
+        shell: bash
+        run: cargo run --locked --release -p xboard-core --target '${{ matrix.target }}' --example live_backend_probe -- --check-deployment > 'artifacts/desktop/${{ matrix.target }}/backend-config-verification.json'
       - name: Verify private runtime configuration permissions
         shell: bash
         run: |

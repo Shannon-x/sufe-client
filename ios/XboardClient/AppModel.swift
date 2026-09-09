@@ -134,13 +134,6 @@ final class AppModel {
         }
     }
 
-    private func backendBaseURL() -> String {
-        if let v = Bundle.main.object(forInfoDictionaryKey: "XboardDefaultBackendURL") as? String {
-            return v
-        }
-        return "https://imitate.cnqq.de"
-    }
-
     // ---------- auth ----------
 
     func login(email: String, password: String, captchaToken: String? = nil) async {

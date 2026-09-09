@@ -33,7 +33,7 @@ iOS 当前固定 Libbox 1.10.7 源码用于兼容现有接口，内核是 sing-b
 
 ## 已取得的独立证据
 
-- 默认公共配置 `https://imitate.cnqq.de/api/v1/guest/comm/config` 只读GET返回HTTP200和成功信封。is_captcha为0；线上额外返回余额充值插件配置字段，本地源码没有相应路由。未尝试登录、注册或产生订单。
+- 历史记录（默认域名调整前）：旧包的公共配置 `https://imitate.cnqq.de/api/v1/guest/comm/config` 只读GET返回HTTP200和成功信封。is_captcha为0；线上额外返回余额充值插件配置字段，本地源码没有相应路由。当时未尝试登录、注册或产生订单。源码默认现已按运营方指定调整为 `https://www.isufe.me`，下述既有安装包与哈希仍记录域名调整前的构建，需重编后更新交付记录。
 - 早期 v1.18.7 下载记录保留于 `ci/checksums/v1.18.7.sha256`；当前桌面/Android 使用官方稳定版 **v1.19.30**，官方 release API digest 固定于 `ci/checksums/v1.19.30.sha256`。
 - Windows 包内 mihomo 与固定官方归档解压内容 SHA256 一致，Wintun 0.14.1 与官方公开 hash 一致且安装在内核旁。后续实际服务/TUN 验证没有改变用户的 Clash、系统代理、默认路由或 DNS。
 - `scripts/install-kernel.py --target x86_64-pc-windows-msvc` 本机执行通过，验证并安装同hash资产。

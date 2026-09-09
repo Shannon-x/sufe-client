@@ -9,12 +9,12 @@ use serde::Deserialize;
 pub const BACKEND_URL: &str = match option_env!("SUFE_BACKEND_URL") {
     Some(value) => {
         if value.is_empty() {
-            "https://imitate.cnqq.de"
+            "https://www.isufe.me"
         } else {
             value
         }
     }
-    None => "https://imitate.cnqq.de",
+    None => "https://www.isufe.me",
 };
 pub const DEFAULT_LOCALE: &str = "zh-CN";
 

@@ -96,8 +96,10 @@ Android uses `Client.forDeployment`, with the same native deployment policy as
 desktop and iOS. Set `SUFE_DEPLOYMENT_JSON` when compiling the Rust libraries;
 it defines trusted API endpoints, feature flags, middleware encryption, encrypted
 OSS discovery and Chatwoot settings. See [deployment configuration](../docs/client-deployment.md).
-The default trusted endpoint is `https://imitate.cnqq.de`; changing a Gradle
-property or secure-store URL does not override the native deployment policy.
+The default trusted endpoint is `https://www.isufe.me`. A nonempty build-time
+`SUFE_DEPLOYMENT_JSON` takes precedence over `SUFE_BACKEND_URL` and the default.
+Rebuild the Rust libraries for every packaged ABI to change an existing APK;
+changing a Gradle property or secure-store URL does not override the native deployment policy.
 
 ## Why `.so` disguise
 

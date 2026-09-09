@@ -1,17 +1,19 @@
 # SUFE 专属后端、加密引导与动态功能
 
-客户端绑定同一个 SUFE 部署，用户无需填写服务器地址。默认保留项目原有的 `https://imitate.cnqq.de`；打包前必须确认这是你的实际服务。功能协议已经根据旁边的 `Xboard-sh-1` 和 `sufe-middleware-rs` 源码核对。本地契约测试不代表生产账号、支付渠道或网络已经验收。
+客户端绑定同一个 SUFE 部署，用户无需填写服务器地址。源码默认 API 地址为运营方指定的 `https://www.isufe.me`。功能协议已经根据旁边的 `Xboard-sh-1` 和 `sufe-middleware-rs` 源码核对。本地契约测试不代表生产账号、支付渠道或网络已经验收。
 
 ## 构建配置
 
-简单直连部署可设置构建环境变量 `SUFE_BACKEND_URL`。完整部署把下列 JSON 保存在本机受限配置文件（不要提交密码），将文件原文设置为 **构建时** 的 `SUFE_DEPLOYMENT_JSON`；Cargo 重新构建后即嵌入应用：
+无覆盖时，所有平台的 Rust 核心使用 `https://www.isufe.me`。简单直连部署可设置构建环境变量 `SUFE_BACKEND_URL`。非空 `SUFE_DEPLOYMENT_JSON` 优先于 `SUFE_BACKEND_URL`，使用其中的 `deployment.api_endpoints`；无效 JSON 明确报错，不回退到默认地址。空的 JSON 配置被忽略，空的 `SUFE_BACKEND_URL` 使用内置默认。
+
+完整部署把下列 JSON 保存在本机受限配置文件（不要提交密码），将文件原文设置为 **构建时** 的 `SUFE_DEPLOYMENT_JSON`；Cargo 重新构建后即嵌入应用：
 
 ```json
 {
   "deployment": {
     "project_id": "sufe",
     "brand_name": "SUFE",
-    "api_endpoints": ["https://api.example.com", "https://api-backup.example.com"],
+    "api_endpoints": ["https://www.isufe.me"],
     "features": {
       "purchase": true,
       "recharge": false,
@@ -33,6 +35,8 @@
 ```
 
 PowerShell：`$env:SUFE_DEPLOYMENT_JSON = Get-Content -Raw -LiteralPath 'C:\private\sufe-deployment.json'`，然后正常打包。API 地址必须是 HTTPS 站点根地址，不可含路径、查询、账户或密码。调试构建仅额外接受 `localhost`/`127.0.0.1`/`::1` 的 HTTP。所有备用 API 必须属于同一用户数据库、同一 Sanctum 会话体系与同一运营方。
+
+这些变量由 Rust 的 `option_env!` 在编译时读取。桌面必须重编 Tauri 的 Rust 应用，Android 必须重编全部 ABI 的 Rust 原生库，iOS 必须重编共享 Rust 库；只更新 Vue/Kotlin/Swift、Gradle 属性、Info.plist 或运行应用时的环境变量均不会更改已嵌入地址。GitHub Actions 的桌面、移动和正式发布工作流会读取仓库 `SUFE_DEPLOYMENT_JSON` secret，旧 secret 仍可能覆盖新默认域名。签名加密 OSS 启用后，还可用可信远程文档中的 API 列表替换本次会话的内嵌列表。
 
 ## 与真实中间件兼容
 

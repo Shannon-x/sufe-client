@@ -92,8 +92,9 @@ impl HttpClient {
             .connect_timeout(Duration::from_secs(5))
             // Never replay credentials or encrypted bodies through redirects.
             .redirect(reqwest::redirect::Policy::none())
-            .user_agent(concat!(
-                "clash.meta/v1.18.7 xboard-client/",
+            .user_agent(format!(
+                "clash.meta/{} xboard-client/{}",
+                include_str!("../../../ci/mihomo-version.txt").trim(),
                 env!("CARGO_PKG_VERSION")
             ))
             .build()?;

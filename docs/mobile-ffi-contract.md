@@ -6,7 +6,7 @@
 
 生产入口 Kotlin `Client.forDeployment(locale, secure)`、Swift `try Client.forDeployment(locale: "zh-CN", secure: secure)`。旧的 URL constructor 保留兼容测试；产品不展示任意后端地址输入。
 
-桌面与移动统一读取 `core/src/api/runtime_config.rs` 的编译变量 `SUFE_DEPLOYMENT_JSON`，兼容 `SUFE_BACKEND_URL`、`SUFE_STEALTH_PASSWORD`、`SUFE_MIDDLEWARE_TURNSTILE_SITE_KEY`。更改这些值需要重编 Rust 原生库；只重编 Kotlin/Swift 不会更新配置。协议、密码、公钥配置见 [部署说明](client-deployment.md)。所有壳复用同一 Stealth-v1、签名加密 OSS、API 故障切换实现；请求新配置和受开关保护的业务操作最多每五分钟刷新一次 OSS。
+桌面与移动统一读取 `core/src/api/runtime_config.rs` 的编译变量 `SUFE_DEPLOYMENT_JSON`，兼容 `SUFE_BACKEND_URL`、`SUFE_STEALTH_PASSWORD`、`SUFE_MIDDLEWARE_TURNSTILE_SITE_KEY`。无覆盖时使用 `https://www.isufe.me`；非空完整 JSON 优先于单独后端地址。更改这些值需要重编 Rust 原生库；只重编 Kotlin/Swift、修改 Info.plist 或安全存储不会更新配置。协议、密码、公钥配置见 [部署说明](client-deployment.md)。所有壳复用同一 Stealth-v1、签名加密 OSS、API 故障切换实现；请求新配置和受开关保护的业务操作最多每五分钟刷新一次 OSS。
 
 `await client.fetchClientConfigJson()` 示例：
 
