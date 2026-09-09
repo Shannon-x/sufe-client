@@ -11,6 +11,19 @@
 !macroend
 
 !macro NSIS_HOOK_PREINSTALL
+  ; The broker deliberately accepts only the protected default installation.
+  ; Reject an incompatible custom location before copying an unusable TUN app.
+  !if "${ARCH}" == "x64"
+    StrCpy $0 "$PROGRAMFILES64\Sufe"
+  !else if "${ARCH}" == "arm64"
+    StrCpy $0 "$PROGRAMFILES64\Sufe"
+  !else
+    StrCpy $0 "$PROGRAMFILES\Sufe"
+  !endif
+  ${If} $INSTDIR != $0
+    MessageBox MB_ICONSTOP|MB_OK "Sufe 的 TUN 服务需要受保护的安装目录。请使用默认目录：$0"
+    Abort
+  ${EndIf}
   !insertmacro SUFE_STOP_SERVICE
 !macroend
 

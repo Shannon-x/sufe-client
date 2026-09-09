@@ -28,7 +28,7 @@ npm run build
 npm run tauri -- dev
 ```
 
-下载工具从官方 HTTPS 获取归档，先对比 `ci/checksums/` 固定 SHA256，再解压 mihomo/Wintun。它不会运行内核、安装服务或修改系统代理。**本版Windows/macOS禁用特权服务启动与TUN，使用系统代理**：特权服务对用户可写工作目录/配置的安全约束仍未完成。准备侧车是满足构建资源要求，不代表允许安装或启用该特权能力。
+下载工具从官方 HTTPS 获取归档，先对比 `ci/checksums/` 固定 SHA256，再解压 mihomo/Wintun。它不会运行内核、安装服务或修改系统代理。当前开发版本恢复默认 TUN；Windows/macOS 首次使用需系统授权安装受保护服务，服务仅运行固定内核及经过限制的配置快照。构建成功与实际 TUN 验收结果分别记录在交付报告中。
 
 构建可分发包前，把服务侧车换为 release 版本：从仓库根执行 `cargo build -p xboard-svc --release`，把 `target/release/xboard-svc.exe` 复制到相同侧车目标名，然后在 `desktop` 执行 `npm run tauri -- build`。Tauri updater 产物需要与配置公钥匹配的签名私钥。
 
@@ -46,14 +46,16 @@ sudo apt-get install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3
 
 ```sh
 # Apple Silicon；Intel 使用 x86_64-apple-darwin
-python3 scripts/install-kernel.py --target aarch64-apple-darwin
+export TARGET_TRIPLE=aarch64-apple-darwin
+python3 scripts/install-kernel.py --target "$TARGET_TRIPLE"
 bash ci/scripts/install-helper-sidecar.sh release
+python3 ci/scripts/presign-macos-sidecars.py "$TARGET_TRIPLE"
 
 # Linux x86_64
 python3 scripts/install-kernel.py --target x86_64-unknown-linux-gnu
 ```
 
-然后在 `desktop` 中执行 `npm ci`、`npm run build`、`npm run tauri -- build`。macOS helper 的架构必须与应用目标一致；跨编译可显式设置 `TARGET_TRIPLE`，但本版特权helper运行仍禁用。系统代理清理、macOS签名公证、Linux各桌面代理/TUN设置需在对应平台测试，Windows构建通过不替代这些测试。
+然后在 `desktop` 中执行 `npm ci`、`npm run build`、`npm run tauri -- build`，明确目标时追加 `--target "$TARGET_TRIPLE"`。macOS helper 的架构必须与应用目标一致。预签步骤按当前 Tauri 的 ad-hoc 参数连续签名两次，只有 SHA256 完全一致才生成侧车校验清单；桌面构建把校验值编入程序。安装前及 root 复制时均验证完整文件 SHA256，打包验证还必须确认成包侧车与预签值相同。修改内核、helper 或签名设置后需重新预签和重建桌面。当前流程拒绝正式证书/entitlements 覆盖，正式签名需先配套验证预签流程。macOS 尚未做 Apple 公证；各平台实际运行结果以交付报告为准。
 
 ## 4. Android 与 iOS
 
@@ -61,7 +63,7 @@ Android 的确切 SDK、NDK、Gradle 和 UniFFI 流程见 [android/README.md](an
 
 iOS见 [ios/README.md](ios/README.md)。当前使用 sing-box/Libbox兼容基线，不是mihomo。`ios/build-libbox.sh` 从固定源码commit构建框架，旧的不存在release下载链接已移除。需要macOS/Xcode、NetworkExtension签名配置、设备验收；不能通过“恢复旧CI片段”直接得到可发行客户端。
 
-移动原生壳尚未具备桌面的全部礼品卡、邀请、Chatwoot、动态配置和验证码交互，不应宣传三端功能已完全一致。
+移动原生壳已接入共享动态配置、礼品卡、邀请、自定义规则、Chatwoot、订单复核及验证码；移动平台的编译、签名与真机流量验收边界见各自 README，不应将源码接线等同于全部平台完成运行验收。
 
 ## 5. 测试
 

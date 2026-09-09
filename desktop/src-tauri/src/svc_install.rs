@@ -29,6 +29,8 @@ use windows_sys::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
 use xboard_core::kernel::launcher::{LauncherError, SvcInstaller};
 
+mod trust;
+
 /// Service name registered with the SCM. Mirrors the constant in `xboard-svc`.
 pub(crate) const SVC_NAME: &str = "xboard-svc";
 
@@ -69,10 +71,14 @@ impl SvcInstaller for RunasInstaller {
             .map_err(|e| LauncherError::Other(format!("join: {e}")))??;
 
         for _ in 0..30 {
-            if ping_svc().await { return Ok(()); }
+            if ping_svc().await {
+                return Ok(());
+            }
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
-        Err(LauncherError::ServiceMissing("Sufe 服务已安装，但安全通信接口尚未就绪".into()))
+        Err(LauncherError::ServiceMissing(
+            "Sufe 服务已安装，但安全通信接口尚未就绪".into(),
+        ))
     }
 
     async fn uninstall(&self) -> Result<(), LauncherError> {
@@ -86,9 +92,13 @@ impl SvcInstaller for RunasInstaller {
 }
 
 /// Run `<exe> <verb>` elevated. Returns Ok on exit status 0; maps the UAC
-/// "user clicked No" to `LauncherError::NeedsConsent` so the manager can
-/// fall back to SystemProxy without screaming.
+/// "user clicked No" to `LauncherError::NeedsConsent` so the manager reports
+/// that the requested TUN connection still needs administrator authorization.
 fn run_elevated(exe: &Path, verb: &str) -> Result<(), LauncherError> {
+    // Keep the verified file and its parent directories locked through UAC.
+    // Never execute a user-writable candidate merely to ask it to verify itself.
+    let _trusted_target =
+        trust::validate(exe).map_err(|error| LauncherError::NotPermitted(error.to_string()))?;
     let exe_w: Vec<u16> = exe
         .as_os_str()
         .encode_wide()
@@ -221,7 +231,9 @@ pub async fn ping_svc() -> bool {
     let mut reader = BufReader::new(read);
     let mut buf = String::new();
     let read = tokio::time::timeout(Duration::from_millis(500), reader.read_line(&mut buf)).await;
-    if !matches!(read, Ok(Ok(n)) if n > 0 && n < 16 * 1024) { return false; }
+    if !matches!(read, Ok(Ok(n)) if n > 0 && n < 16 * 1024) {
+        return false;
+    }
     matches!(serde_json::from_str::<Frame>(&buf), Ok(Frame { id: 1, body: FrameBody::Response(Response::Pong { helper_version }) }) if helper_version == xboard_core::kernel::ipc::service_version())
 }
 

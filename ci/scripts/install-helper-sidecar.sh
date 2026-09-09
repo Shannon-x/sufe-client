@@ -54,19 +54,19 @@ echo "→ build xboard-helper (${PROFILE}) for ${TRIPLE}"
 cd "${REPO_ROOT}"
 # When TARGET_TRIPLE differs from the actual host, pass it to cargo so the
 # binary lands in target/${TRIPLE}/${PROFILE}/ and not target/${PROFILE}/.
-CARGO_TARGET_FLAG=()
+CARGO_ARGS=(build --locked -p xboard-helper)
 TARGET_SUBDIR=""
 if [[ -n "${TARGET_TRIPLE:-}" ]]; then
-    CARGO_TARGET_FLAG=(--target "${TARGET_TRIPLE}")
+    CARGO_ARGS+=(--target "${TARGET_TRIPLE}")
     TARGET_SUBDIR="${TARGET_TRIPLE}/"
 fi
 if [[ "${PROFILE}" == "release" ]]; then
-    cargo build --locked -p xboard-helper --release "${CARGO_TARGET_FLAG[@]}"
+    CARGO_ARGS+=(--release)
     SRC="${REPO_ROOT}/target/${TARGET_SUBDIR}release/xboard-helper"
 else
-    cargo build --locked -p xboard-helper "${CARGO_TARGET_FLAG[@]}"
     SRC="${REPO_ROOT}/target/${TARGET_SUBDIR}debug/xboard-helper"
 fi
+cargo "${CARGO_ARGS[@]}"
 
 OUT="${DEST}/xboard-helper-${TRIPLE}"
 if [[ "${TRIPLE}" == *windows* ]]; then

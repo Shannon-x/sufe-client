@@ -119,6 +119,9 @@ impl Kernel {
             return Err(error).context("attach mihomo to service lifetime job");
         }
         let pid = child.id().context("mihomo has no PID")?;
+        // PnP driver initialization can outlive the REST socket by many seconds.
+        // Keep both phases within the client's 60 second IPC request timeout.
+        let startup_deadline = tokio::time::Instant::now() + Duration::from_secs(55);
         let ready = wait_for_owned_listener(&mut child, prepared.private_port, pid).await;
         if let Err(error) = ready {
             let _ = child.kill().await;
@@ -129,7 +132,7 @@ impl Kernel {
         // A live REST controller does not prove TUN started: mihomo continues
         // running after adapter/address failures. Confirm the real OS adapter
         // before publishing the gateway or returning Started to the UI.
-        if let Err(error) = wait_for_tun_adapter(&mut child, &log_path).await {
+        if let Err(error) = wait_for_tun_adapter(&mut child, &log_path, startup_deadline).await {
             let _ = child.kill().await;
             let _ = child.wait().await;
             let _ = std::fs::remove_file(&config_path);
@@ -173,8 +176,12 @@ impl Kernel {
     }
 }
 
-async fn wait_for_tun_adapter(child: &mut Child, log_path: &std::path::Path) -> Result<()> {
-    for _ in 0..100 {
+async fn wait_for_tun_adapter(
+    child: &mut Child,
+    log_path: &std::path::Path,
+    deadline: tokio::time::Instant,
+) -> Result<()> {
+    while tokio::time::Instant::now() < deadline {
         if child.try_wait()?.is_some() {
             bail!("mihomo exited before its TUN adapter was ready");
         }

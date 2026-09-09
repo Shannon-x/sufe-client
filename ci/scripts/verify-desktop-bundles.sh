@@ -27,11 +27,13 @@ case "$TRIPLE" in
     done
     codesign --verify --deep --strict "$APP"
     "${APP}/Contents/MacOS/mihomo" -v | tee -a "$REPORT" | grep -F "$VERSION"
+    python3 "$ROOT/ci/scripts/probe-macos-signatures.py" "$APP" "$ROOT" "$TRIPLE" "$OUT/codesign-stability.json" | tee -a "$REPORT"
     bash "$ROOT/ci/scripts/smoke-helper-macos.sh" "$APP" "$OUT"
     printf 'Verified real root helper installation, owner IPC, legacy path rejection, restricted controller and isolated TUN lifecycle without changing default routes; test helper uninstalled.\n' >> "$REPORT"
-    packages=("${BUNDLES}/dmg/"*.dmg)
-    [[ ${#packages[@]} -gt 0 ]]
-    cp "${packages[@]}" "$OUT/"
+    # Bash 3.2 + nounset cannot inspect an empty array after nullglob.
+    set -- "${BUNDLES}/dmg/"*.dmg
+    [[ $# -gt 0 ]] || { echo 'No macOS DMG was produced' >&2; exit 1; }
+    cp "$@" "$OUT/"
     ditto -c -k --sequesterRsrc --keepParent "$APP" "${OUT}/Sufe-${TRIPLE}.app.zip"
     printf 'Verified both sidecars, native architecture and ad-hoc code signature. No Apple notarization.\n' >> "$REPORT"
     ;;
@@ -39,6 +41,16 @@ case "$TRIPLE" in
     debs=("${BUNDLES}/deb/"*.deb)
     images=("${BUNDLES}/appimage/"*.AppImage)
     [[ ${#debs[@]} -eq 1 && ${#images[@]} -eq 1 ]]
+    # Inspect the package metadata: CI's build dependencies alone cannot prove
+    # a clean desktop installation will receive GTK, WebKit and tray runtimes.
+    depends="$(dpkg-deb -f "${debs[0]}" Depends)"
+    printf 'deb Depends: %s\n' "$depends" | tee -a "$REPORT"
+    for dependency in libcap2-bin iproute2 libgtk-3-0 libwebkit2gtk-4.1-0 libayatana-appindicator3-1; do
+      if ! printf '%s\n' "$depends" | tr ',' '\n' | awk '{print $1}' | grep -Fxq "$dependency"; then
+        echo "deb is missing required runtime dependency: $dependency" >&2
+        exit 1
+      fi
+    done
     dpkg-deb -R "${debs[0]}" "${TMP}/deb"
     for binary in xboard-desktop mihomo; do
       test -x "${TMP}/deb/usr/bin/${binary}"

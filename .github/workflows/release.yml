@@ -118,6 +118,11 @@ jobs:
           TARGET_TRIPLE: ${{ matrix.target }}
         run: bash ci/scripts/install-helper-sidecar.sh release
 
+      - name: Pre-sign and pin macOS privileged sidecars
+        if: runner.os == 'macOS'
+        shell: bash
+        run: python3 ci/scripts/presign-macos-sidecars.py '${{ matrix.target }}'
+
       - name: Build xboard-svc + fetch wintun.dll
         if: runner.os == 'Windows'
         shell: bash

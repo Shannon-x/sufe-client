@@ -23,12 +23,13 @@ host_triple() {
 
 install_one() {
     local triple="$1"
-    local flags=()
+    # macOS ships Bash 3.2, where nounset rejects an empty array expansion.
+    local args=(--version "${VERSION}" --target "${triple}")
     if [[ "${triple}" == *windows* && "${MIHOMO_WINDOWS_STANDARD:-false}" == true ]] ||
        [[ "${triple}" == *linux* && "${MIHOMO_LINUX_STANDARD:-false}" == true ]]; then
-        flags+=(--standard)
+        args+=(--standard)
     fi
-    "${PYTHON}" "${REPO_ROOT}/scripts/install-kernel.py" --version "${VERSION}" --target "${triple}" "${flags[@]}"
+    "${PYTHON}" "${REPO_ROOT}/scripts/install-kernel.py" "${args[@]}"
 }
 
 if [[ "${MODE}" == --all ]]; then

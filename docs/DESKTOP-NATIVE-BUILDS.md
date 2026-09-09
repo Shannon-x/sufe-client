@@ -14,7 +14,7 @@
 
 ## 产物必须通过的检查
 
-- macOS：app 内存在 UI、mihomo 和 helper；三者架构匹配；整个 app 的 ad-hoc 签名有效；内核 `-v` 对应固定版本。
+- macOS：app 内存在 UI、mihomo 和 helper；三者架构匹配；整个 app 的 ad-hoc 签名有效；内核 `-v` 对应固定版本。两侧车预签必须连续两次产生相同 SHA256，桌面构建嵌入这些校验值，成包中的完整文件必须仍与它们相同。CI 在临时 runner 安装真实 helper，验证 owner IPC、旧路径协议拒绝、受限 controller、独立 TUN 创建及停止；关闭自动路由与 DNS，不使用真实订阅，并校验默认路由不变，最终卸载测试组件。
 - Linux deb：解包后的 `/usr/bin/mihomo` 与 UI 可执行文件存在；实际安装 deb 后 `getcap` 必须包含 `cap_net_admin`。
 - Linux AppImage：真实解包后 UI 与内核齐全；内核版本正确。deb 与 AppImage 各在 Xvfb 中运行 12 秒，无提前退出。这个检查验证未登录启动，不代表真实 VPN 已经过连接验证。
 - 每个平台产出 `SHA256SUMS`、源 commit / 架构 / 内核版本验证报告；Linux 另保留启动日志。
@@ -26,15 +26,19 @@ AppImage 所在桌面需提供 `pkexec` / polkit 认证代理及 `setcap`（Debi
 ## 本地与云端命令
 
 ```sh
-python -m unittest discover -s scripts/tests -v
+python3 -m unittest discover -s scripts/tests -v
+# Apple Silicon；Intel 使用 x86_64-apple-darwin。
+export TARGET_TRIPLE=aarch64-apple-darwin
 bash ci/scripts/install-mihomo-sidecar.sh
-# macOS 再运行（TARGET_TRIPLE 可明确指定架构）
 bash ci/scripts/install-helper-sidecar.sh release
+python3 ci/scripts/presign-macos-sidecars.py "$TARGET_TRIPLE"
 cd desktop
 npm ci
-npm run tauri build -- --ci --target aarch64-apple-darwin --bundles app,dmg --config src-tauri/tauri.artifacts.conf.json -- --locked
-# Linux 将 target 换成 x86_64-unknown-linux-gnu，bundles 换成 deb,appimage。
+npm run tauri build -- --ci --target "$TARGET_TRIPLE" --bundles app,dmg --config src-tauri/tauri.artifacts.conf.json -- --locked
+# Linux 将 target 换成 x86_64-unknown-linux-gnu，bundles 换成 deb,appimage；跳过helper和预签两个macOS专属步骤。
 ```
+
+预签参数与锁定的 Tauri CLI 2.11.1 一致：`codesign --force -s - --options runtime`，以最终文件名 `mihomo` 和 `xboard-helper` 签名；不读取或创建生产签名私钥。`APPLE_SIGNING_IDENTITY` 正式身份、证书覆盖或 entitlements 与当前流程不兼容时明确停止。`presigned-sidecars.json`、`codesign-stability.json` 保存本次实际哈希，任何重复签名不稳定或成包改写都会阻止交付。安装器使用编入 GUI 的预期校验值，不接受“现场计算可写侧车的哈希作为信任依据”。修改 CLI/签名参数需重新审查并通过这组真实 macOS 检查。[Tauri 2.11.1 签名实现](https://github.com/tauri-apps/tauri/blob/tauri-cli-v2.11.1/crates/tauri-macos-sign/src/keychain.rs)
 
 原 `Release Desktop` 工作流继续用于有 updater 签名的正式发布。验证普通安装包请选 `Build Desktop Artifacts`。尚未取得成功的 Actions 运行记录前，只能报告脚本与静态检查通过，不能报告 macOS/Linux 成品构建通过。
 

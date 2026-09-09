@@ -41,6 +41,7 @@ core/src/kernel/.cache/
 desktop/src-tauri/binaries/mihomo*
 desktop/src-tauri/binaries/xboard-helper*
 desktop/src-tauri/binaries/xboard-svc*
+desktop/src-tauri/binaries/macos-sidecar-pins-*.sha256
 desktop/src-tauri/binaries/wintun.dll
 
 # --- Editor / OS ---

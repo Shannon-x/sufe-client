@@ -174,9 +174,11 @@ pub async fn helper_uninstall(app: AppHandle) -> CommandResult<()> {
 #[cfg(target_os = "macos")]
 async fn ping_helper() -> bool {
     use std::time::Duration;
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     use tokio::net::UnixStream;
-    use xboard_core::kernel::ipc::{Frame, FrameBody, Request, HELPER_SOCKET_PATH};
+    use xboard_core::kernel::ipc::{
+        compatible_service_version, Frame, FrameBody, Request, Response, HELPER_SOCKET_PATH,
+    };
 
     let connect = tokio::time::timeout(
         Duration::from_millis(500),
@@ -187,6 +189,12 @@ async fn ping_helper() -> bool {
         Ok(Ok(s)) => s,
         _ => return false,
     };
+    if !stream
+        .peer_cred()
+        .is_ok_and(|credentials| credentials.uid() == 0)
+    {
+        return false;
+    }
     let (read_half, mut write_half) = stream.into_split();
     let frame = Frame {
         id: 1,
@@ -201,8 +209,17 @@ async fn ping_helper() -> bool {
         return false;
     }
     let _ = write_half.shutdown().await;
-    let mut reader = BufReader::new(read_half);
+    let mut reader = BufReader::new(read_half).take(16 * 1024);
     let mut buf = String::new();
     let read = tokio::time::timeout(Duration::from_millis(500), reader.read_line(&mut buf)).await;
-    matches!(read, Ok(Ok(n)) if n > 0)
+    if !matches!(read, Ok(Ok(n)) if n > 0) || !buf.ends_with('\n') {
+        return false;
+    }
+    matches!(
+        serde_json::from_str::<Frame>(&buf),
+        Ok(Frame {
+            id: 1,
+            body: FrameBody::Response(Response::Pong { helper_version }),
+        }) if compatible_service_version(&helper_version)
+    )
 }

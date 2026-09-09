@@ -79,10 +79,18 @@ fn run_install(helper: &Path, kernel: &Path) -> Result<(), LauncherError> {
     let result = (|| {
         let helper_copy = snapshot(helper, &directory.join("helper"))?;
         let kernel_copy = snapshot(kernel, &directory.join("kernel"))?;
-        let helper_hash = sha256(&helper_copy)?;
-        let kernel_hash = sha256(&kernel_copy)?;
+        // Pins are compiled into the GUI after deterministic pre-signing. Do
+        // not treat a fresh digest of a writable .app sidecar as its own trust
+        // root. The elevated snapshot copy checks these same pinned values.
+        let helper_hash = env!("SUFE_MAC_HELPER_SHA256");
+        let kernel_hash = env!("SUFE_MAC_KERNEL_SHA256");
+        if sha256(&helper_copy)? != helper_hash || sha256(&kernel_copy)? != kernel_hash {
+            return Err(LauncherError::NotPermitted(
+                "应用内核或辅助程序与此版本的安全校验不符，请重新安装完整 Sufe 客户端。".into(),
+            ));
+        }
         let command =
-            script::install_script(&helper_copy, &kernel_copy, &helper_hash, &kernel_hash, uid)
+            script::install_script(&helper_copy, &kernel_copy, helper_hash, kernel_hash, uid)
                 .map_err(LauncherError::Other)?;
         run_as_admin(&command)
     })();

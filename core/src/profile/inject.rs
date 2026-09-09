@@ -213,9 +213,10 @@ fn patch_mihomo_inner(
             // mihomo Linux-targeted code-paths panic at YAML parse time.
             #[cfg(target_os = "linux")]
             {
-                // Auto-write nftables rules in `output` chain so processes
-                // bound to a non-default interface still get redirected.
-                tun.insert(Value::String("auto-redirect".into()), Value::Bool(true));
+                // v1.19.30 hard-codes the auto-redirect firewall table name
+                // to "mihomo". Keep normal TUN auto-route without taking over
+                // another client's shared nftables/iptables namespace.
+                tun.insert(Value::String("auto-redirect".into()), Value::Bool(false));
                 // Kernel GSO offloading — material throughput improvement on
                 // Linux 5.10+, where TUN GSO checksumming is solid.
                 tun.insert(Value::String("gso".into()), Value::Bool(true));
@@ -223,15 +224,16 @@ fn patch_mihomo_inner(
                     Value::String("gso-max-size".into()),
                     Value::Number(65536.into()),
                 );
-                // Pick rule/table indices far from systemd-networkd defaults
-                // (main=254, default=253, local=255) and common VPN ranges.
+                // Avoid mihomo's default table 2022 and rule priority 9000.
+                // This reduces known collisions; two global VPN routes can
+                // still conflict and are not guaranteed to coexist.
                 tun.insert(
                     Value::String("iproute2-table-index".into()),
-                    Value::Number(2022.into()),
+                    Value::Number(1989.into()),
                 );
                 tun.insert(
                     Value::String("iproute2-rule-index".into()),
-                    Value::Number(9000.into()),
+                    Value::Number(19890.into()),
                 );
             }
         }
@@ -694,7 +696,7 @@ mod tests {
                 .unwrap()
                 .as_str()
                 .unwrap(),
-            "0.0.0.0:1053"
+            "127.0.0.1:1053"
         );
         let proxy_ns = dns
             .get(Value::String("proxy-server-nameserver".into()))
@@ -740,7 +742,7 @@ mod tests {
         };
         assert_eq!(
             tun.get(Value::String("auto-redirect".into())).unwrap(),
-            &Value::Bool(true)
+            &Value::Bool(false)
         );
         assert_eq!(
             tun.get(Value::String("gso".into())).unwrap(),
@@ -751,7 +753,14 @@ mod tests {
                 .unwrap()
                 .as_u64()
                 .unwrap(),
-            2022
+            1989
+        );
+        assert_eq!(
+            tun.get(Value::String("iproute2-rule-index".into()))
+                .unwrap()
+                .as_u64()
+                .unwrap(),
+            19890
         );
     }
 

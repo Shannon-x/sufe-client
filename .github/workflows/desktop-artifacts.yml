@@ -82,6 +82,10 @@ jobs:
         env:
           TARGET_TRIPLE: ${{ matrix.target }}
         run: bash ci/scripts/install-helper-sidecar.sh release
+      - name: Pre-sign and pin macOS privileged sidecars
+        if: runner.os == 'macOS'
+        shell: bash
+        run: python3 ci/scripts/presign-macos-sidecars.py '${{ matrix.target }}'
       - name: Build native bundles without updater signatures
         working-directory: desktop
         shell: bash
@@ -94,6 +98,7 @@ jobs:
         shell: bash
         run: |
           cargo test --locked --release -p xboard-core --target '${{ matrix.target }}' --lib kernel::launcher::linux_caps
+          cargo test --locked --release -p xboard-core --target '${{ matrix.target }}' --lib profile::inject::tests
           cargo test --locked --release -p xboard-desktop --target '${{ matrix.target }}' --lib linux_launcher::tests
       - name: Upload packages and verification report
         if: always()
