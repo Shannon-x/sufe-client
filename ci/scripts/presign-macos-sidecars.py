@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Pre-sign reviewed sidecars with Tauri's exact ad-hoc signing arguments.
 
-Two identical signatures are required before pinning full-file SHA256. The
-desktop build embeds those pins and the final bundle must still match them.
+After preparing the Mach-O signature layout, two identical signatures are
+required before pinning full-file SHA256. The desktop build embeds those pins
+and the final bundle must still match them.
 """
 import hashlib
 import json
@@ -22,6 +23,19 @@ def sha256(path):
         for block in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def signature_details(path):
+    result = subprocess.run(
+        ["/usr/bin/codesign", "-d", "--verbose=4", str(path)],
+        capture_output=True, text=True, check=True, timeout=30,
+    )
+    details = result.stdout + result.stderr
+    identifier = next((line.removeprefix("Identifier=") for line in details.splitlines()
+                       if line.startswith("Identifier=")), None)
+    if not identifier:
+        raise ValueError("codesign did not report an identifier for the sidecar")
+    return {"identifier": identifier, "size": path.stat().st_size}
 
 
 def validate_configuration():
@@ -59,9 +73,18 @@ def main(triple):
             destination.chmod(0o755)
             entry = {"raw_sha256": sha256(original)}
             report["binaries"][name] = entry
-            for iteration in (1, 2):
+            # Apple's MachORep::identificationFor hashes load commands when a
+            # Go binary has no LC_UUID. Signing a bare basename then uses that
+            # value in its default identifier. The first codesign allocation
+            # changes LC_CODE_SIGNATURE, so comparing only the first two runs
+            # incorrectly rejects the convergent result. Prepare that layout
+            # once, then still demand TWO byte-identical signatures. There is
+            # no retry loop which could accidentally bless a changing binary.
+            # https://github.com/apple-oss-distributions/Security/blob/main/OSX/libsecurity_codesigning/lib/machorep.cpp
+            for iteration in (0, 1, 2):
                 subprocess.run(["/usr/bin/codesign", "--force", "-s", "-", "--options", "runtime", str(destination)], check=True, timeout=30)
                 entry[f"signature_{iteration}_sha256"] = sha256(destination)
+                entry[f"signature_{iteration}_details"] = signature_details(destination)
             (report_dir / "presigned-sidecars.json").write_text(json.dumps(report, indent=2) + "\n")
             if entry["signature_1_sha256"] != entry["signature_2_sha256"]:
                 raise ValueError(f"{name} ad-hoc re-signing is not byte-stable; refusing an unreliable install pin")
