@@ -9,6 +9,10 @@ use crate::state::AppState;
 
 #[tauri::command]
 pub async fn fetch_notices(state: State<'_, AppState>) -> CommandResult<Vec<Notice>> {
+    super::guest::refresh_client_config(&state).await?;
+    if !super::guest::client_config_snapshot().features.notice {
+        return Err(CommandError::new("feature_disabled", "公告暂未开放"));
+    }
     let client = state
         .snapshot_client()
         .ok_or_else(|| CommandError::new("not_initialized", "请先选择后端服务地址"))?;

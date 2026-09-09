@@ -26,6 +26,7 @@ plugins {
 android {
     namespace = "com.xboard.client"
     compileSdk = 34
+    ndkVersion = "27.3.13750724"
 
     defaultConfig {
         applicationId = "com.xboard.client"
@@ -34,15 +35,8 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
-        // Default backend URL baked into the APK. Overridable at runtime
-        // by writing to the "xboard.backend_base_url" key in the secure
-        // store (used by QA / staging — no in-app UI for it).
-        // Set via gradle.properties: `xboard.defaultBackendUrl=...`
-        // or env var `XBOARD_DEFAULT_BACKEND_URL`.
-        val defaultBackend = (project.findProperty("xboard.defaultBackendUrl") as String?)
-            ?: System.getenv("XBOARD_DEFAULT_BACKEND_URL")
-            ?: "https://imitate.cnqq.de"
-        buildConfigField("String", "DEFAULT_BACKEND_URL", "\"$defaultBackend\"")
+        // API endpoints and feature policy are embedded in the Rust core
+        // through SUFE_DEPLOYMENT_JSON. AppContainer uses Client.forDeployment.
 
         ndk {
             // Three ABIs match the `cargo ndk` invocation in justfile's
@@ -115,10 +109,9 @@ android {
         }
         jniLibs {
             // mihomo (renamed libmihomo.so) lives in jniLibs but must
-            // ship uncompressed so it can be exec'd at runtime — the
-            // default `useLegacyPackaging = false` already gives us this
-            // on AGP 8, but make it explicit for future readers.
-            useLegacyPackaging = false
+            // be extracted to nativeLibraryDir to be exec'd. Loading
+            // directly from an uncompressed APK does not create that file.
+            useLegacyPackaging = true
         }
     }
 
@@ -173,6 +166,9 @@ dependencies {
     // `data_json` blobs out of CheckoutResponse). The wire layer is
     // already JSON-decoded inside Rust.
     implementation(libs.kotlinx.serialization.json)
+
+    // Render payment QR payloads locally; no third-party image service.
+    implementation("com.google.zxing:core:3.5.3")
 }
 
 // ---------------------------------------------------------------------------
@@ -210,6 +206,31 @@ androidComponents {
     onVariants { variant ->
         variant.sources.kotlin
             ?.addStaticSourceDirectory(uniffiOutDir.asFile.absolutePath)
+
+        val variantName = variant.name.replaceFirstChar { it.uppercaseChar() }
+        val requiredNativeFiles = listOf("arm64-v8a", "armeabi-v7a", "x86_64").flatMap { abi ->
+            listOf("libxboard_core.so", "libmihomo.so").map { library ->
+                "$abi/$library" to project.file("src/main/jniLibs/$abi/$library")
+            }
+        }
+        val verifyNativeLibraries = tasks.register("verify${variantName}NativeLibraries") {
+            group = "verification"
+            description = "Refuse to package an APK without its Rust core and mihomo executables."
+            doLast {
+                for ((relativePath, binary) in requiredNativeFiles) {
+                        check(binary.isFile && binary.length() > 4) {
+                            "Missing $relativePath. Run just core-android and just kernel-android before packaging."
+                        }
+                        val header = binary.inputStream().use { it.readNBytes(4) }
+                        check(header.contentEquals(byteArrayOf(0x7f, 0x45, 0x4c, 0x46))) {
+                            "Invalid ELF binary: $relativePath. Rebuild or download the verified native artifact."
+                        }
+                }
+            }
+        }
+        tasks.matching { it.name == "merge${variantName}NativeLibs" }.configureEach {
+            dependsOn(verifyNativeLibraries)
+        }
     }
 }
 

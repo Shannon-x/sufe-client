@@ -8,6 +8,13 @@ const host = process.env.TAURI_DEV_HOST;
 export default defineConfig(async () => ({
   plugins: [vue()],
 
+  // Interpret message ASTs instead of generating functions at runtime. Tauri's
+  // production CSP disallows eval; our TypeScript locales still need a compiler.
+  define: {
+    __INTLIFY_JIT_COMPILATION__: true,
+    __INTLIFY_DROP_MESSAGE_COMPILER__: false,
+  },
+
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("./src", import.meta.url)),

@@ -8,7 +8,11 @@ use xboard_core::api::{Ticket, TicketDetail};
 use crate::error::{CommandError, CommandResult};
 use crate::state::AppState;
 
-fn require_auth(state: &State<'_, AppState>) -> CommandResult<xboard_core::api::HttpClient> {
+async fn require_auth(state: &State<'_, AppState>) -> CommandResult<xboard_core::api::HttpClient> {
+    super::guest::refresh_client_config(state).await?;
+    if !super::guest::client_config_snapshot().features.tickets {
+        return Err(CommandError::new("feature_disabled", "工单功能尚未开放"));
+    }
     let client = state
         .snapshot_client()
         .ok_or_else(|| CommandError::new("not_initialized", "请先选择后端服务地址"))?;
@@ -20,13 +24,13 @@ fn require_auth(state: &State<'_, AppState>) -> CommandResult<xboard_core::api::
 
 #[tauri::command]
 pub async fn fetch_tickets(state: State<'_, AppState>) -> CommandResult<Vec<Ticket>> {
-    let client = require_auth(&state)?;
+    let client = require_auth(&state).await?;
     Ok(client.fetch_tickets().await?)
 }
 
 #[tauri::command]
 pub async fn fetch_ticket(state: State<'_, AppState>, id: i64) -> CommandResult<TicketDetail> {
-    let client = require_auth(&state)?;
+    let client = require_auth(&state).await?;
     Ok(client.fetch_ticket(id).await?)
 }
 
@@ -40,14 +44,14 @@ pub async fn reply_ticket(
     if trimmed.is_empty() {
         return Err(CommandError::new("empty_message", "回复内容不能为空"));
     }
-    let client = require_auth(&state)?;
+    let client = require_auth(&state).await?;
     client.reply_ticket(id, trimmed).await?;
     Ok(())
 }
 
 #[tauri::command]
 pub async fn close_ticket(state: State<'_, AppState>, id: i64) -> CommandResult<()> {
-    let client = require_auth(&state)?;
+    let client = require_auth(&state).await?;
     client.close_ticket(id).await?;
     Ok(())
 }
@@ -70,6 +74,6 @@ pub async fn save_ticket(
     if !(0..=2).contains(&level) {
         return Err(CommandError::new("invalid_level", "工单等级取值为 0/1/2"));
     }
-    let client = require_auth(&state)?;
+    let client = require_auth(&state).await?;
     Ok(client.save_ticket(subj, level, body).await?)
 }

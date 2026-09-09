@@ -8,6 +8,10 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.VpnService
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Binder
 import android.os.Build
 import android.os.IBinder
@@ -15,6 +19,7 @@ import android.os.ParcelFileDescriptor
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import com.xboard.client.MainActivity
+import com.xboard.client.AppContainer
 import com.xboard.client.R
 import com.xboard.client.core.TunConfig
 import com.xboard.client.core.TunnelException
@@ -31,9 +36,8 @@ import com.xboard.client.core.TunnelException
  *   2. Rust calls into the delegate's `establishTun` (UniFFI callback
  *      interface) → routes here via [LocalBinder.establishTun]. We
  *      build a [VpnService.Builder] from the [TunConfig], call
- *      `establish()`, then `detachFd()` and hand the integer back to
- *      Rust. Rust passes that fd to mihomo via its `tun.device.fd`
- *      knob.
+ *      `establish()` and lends its fd to Rust. The launcher preserves
+ *      it across exec in the child; this service owns the parent copy.
  *
  *   3. We promote ourselves to a foreground service the moment the fd
  *      is established — Android kills VPN sessions if the host process
@@ -59,7 +63,15 @@ class XboardVpnService : VpnService() {
     }
 
     private val binder = LocalBinder()
-    private var tunFd: ParcelFileDescriptor? = null
+    @Volatile private var tunFd: ParcelFileDescriptor? = null
+    private val networks = linkedSetOf<Network>()
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Started + foreground lifetime survives Activity recreation.
+        if (tunFd != null) startForegroundCompat() else stopSelf(startId)
+        return START_NOT_STICKY
+    }
 
     override fun onBind(intent: Intent?): IBinder {
         // VpnService.onBind for the framework's `android.net.VpnService`
@@ -75,14 +87,17 @@ class XboardVpnService : VpnService() {
     override fun onRevoke() {
         Log.i(TAG, "VPN permission revoked by user / system")
         closeTunInternal()
+        AppContainer.get(this).disconnectVpn()
         super.onRevoke()
     }
 
     override fun onDestroy() {
         closeTunInternal()
+        AppContainer.get(this).disconnectVpn()
         super.onDestroy()
     }
 
+    @Synchronized
     private fun establishTunInternal(config: TunConfig): Int {
         // Re-establish: tear down any prior fd before building a new one.
         tunFd?.close()
@@ -91,12 +106,14 @@ class XboardVpnService : VpnService() {
         val builder = Builder()
             .setSession(config.session)
             .addAddress(config.ipv4Addr, config.ipv4Prefix.toInt())
+            .addAddress("fdfe:dcba:9876::1", 126)
+            .addRoute("::", 0)
             .setMtu(config.mtu.toInt())
             // Allow the app's own traffic to bypass the tunnel — without
             // this, the kernel itself could deadlock trying to talk back
             // to the panel API through its own tunnel.
             .also { b ->
-                runCatching { b.addDisallowedApplication(packageName) }
+                b.addDisallowedApplication(packageName)
             }
 
         config.routes.ifEmpty { listOf("0.0.0.0/0") }.forEach { route ->
@@ -111,27 +128,64 @@ class XboardVpnService : VpnService() {
         tunFd = pfd
 
         // Promote to foreground the moment the tunnel is up.
-        startForegroundCompat()
-
-        // detachFd: hand ownership of the fd to Rust/mihomo. The PFD
-        // itself stays in tunFd (its close() becomes a no-op on the
-        // already-detached fd, but we want to keep the reference for
-        // close-tracking purposes — see closeTunInternal which uses
-        // `tunFd != null` as the "we have a tunnel" flag).
-        return pfd.detachFd()
+        try {
+            startService(Intent(this, XboardVpnService::class.java))
+            startForegroundCompat()
+            observeUnderlyingNetworks()
+        } catch (error: Exception) {
+            closeTunInternal()
+            throw TunnelException.Backend("无法启动 VPN 前台服务：${error.message}")
+        }
+        return pfd.fd
     }
 
+    @Synchronized
     private fun closeTunInternal() {
         tunFd?.let {
             runCatching { it.close() }
         }
         tunFd = null
+        networkCallback?.let { callback ->
+            val connectivity = getSystemService(ConnectivityManager::class.java)
+            runCatching { connectivity.unregisterNetworkCallback(callback) }
+        }
+        networkCallback = null
+        synchronized(networks) { networks.clear() }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
             stopForeground(STOP_FOREGROUND_REMOVE)
         } else {
             @Suppress("DEPRECATION")
             stopForeground(true)
         }
+        stopSelf()
+    }
+
+    private fun observeUnderlyingNetworks() {
+        if (networkCallback != null) return
+        val connectivity = getSystemService(ConnectivityManager::class.java)
+        val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                synchronized(networks) {
+                    networks.add(network)
+                    setUnderlyingNetworks(networks.toTypedArray())
+                }
+            }
+
+            override fun onLost(network: Network) {
+                synchronized(networks) {
+                    networks.remove(network)
+                    setUnderlyingNetworks(networks.toTypedArray())
+                }
+            }
+        }
+        connectivity.registerNetworkCallback(
+            NetworkRequest.Builder()
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+                .build(),
+            callback,
+        )
+        networkCallback = callback
     }
 
     private fun startForegroundCompat() {

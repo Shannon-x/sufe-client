@@ -12,6 +12,7 @@ import androidx.activity.result.ActivityResult
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.contract.ActivityResultContracts
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
 
@@ -67,8 +68,17 @@ class VpnBinder(private val activity: ComponentActivity) {
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
+            pendingBind?.complete(null)
+            pendingBind = null
             currentDelegate?.detach()
             currentDelegate = null
+        }
+
+        override fun onNullBinding(name: ComponentName?) { unbind() }
+
+        override fun onBindingDied(name: ComponentName?) {
+            currentDelegate?.detach()
+            unbind()
         }
     }
 
@@ -91,6 +101,7 @@ class VpnBinder(private val activity: ComponentActivity) {
         return deferred.await()
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     private suspend fun bindServiceSuspending(): AndroidTunDelegate? =
         suspendCancellableCoroutine { cont ->
             val deferred = CompletableDeferred<AndroidTunDelegate?>()
@@ -114,12 +125,16 @@ class VpnBinder(private val activity: ComponentActivity) {
         }
 
     /**
-     * Tear down the bind. Safe to call repeatedly. Triggers
-     * [XboardVpnService.onDestroy] when the last binding drops, which
-     * in turn closes the tunnel.
+     * Tear down the Activity binding and settle pending permission/bind waits.
+     * An active started VPN service keeps running across Activity recreation.
      */
     fun unbind() {
-        currentDelegate?.detach()
+        pendingPermission?.complete(false)
+        pendingPermission = null
+        pendingBind?.complete(null)
+        pendingBind = null
+        // The started foreground service and its Rust callback outlive the
+        // Activity (rotation/navigation). Detach only on actual service death.
         currentDelegate = null
         runCatching { activity.unbindService(serviceConnection) }
     }

@@ -61,10 +61,10 @@ if [[ -n "${TARGET_TRIPLE:-}" ]]; then
     TARGET_SUBDIR="${TARGET_TRIPLE}/"
 fi
 if [[ "${PROFILE}" == "release" ]]; then
-    cargo build -p xboard-helper --release "${CARGO_TARGET_FLAG[@]}"
+    cargo build --locked -p xboard-helper --release "${CARGO_TARGET_FLAG[@]}"
     SRC="${REPO_ROOT}/target/${TARGET_SUBDIR}release/xboard-helper"
 else
-    cargo build -p xboard-helper "${CARGO_TARGET_FLAG[@]}"
+    cargo build --locked -p xboard-helper "${CARGO_TARGET_FLAG[@]}"
     SRC="${REPO_ROOT}/target/${TARGET_SUBDIR}debug/xboard-helper"
 fi
 

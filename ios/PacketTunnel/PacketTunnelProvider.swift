@@ -1,6 +1,7 @@
 import Foundation
 import Libbox
 import NetworkExtension
+import Network
 import os.log
 
 /// `PacketTunnelProvider` is the entry point Apple loads when the user toggles
@@ -10,8 +11,8 @@ import os.log
 /// The sing-box JSON configuration is rendered by the main app (which has
 /// access to the FFI `render_singbox_config` and the user's subscription token)
 /// and dropped in the App Group's `UserDefaults` under
-/// `ConnectionController.configKey`. This NE has no FFI dependency at all,
-/// which keeps it well under the 50 MB iOS NE memory cap.
+/// `ConnectionController.configKey`. The extension's memory use must still
+/// be profiled on physical devices before distribution.
 final class PacketTunnelProvider: NEPacketTunnelProvider {
     // The shared App Group store also used by the main app.
     private static let appGroupId = "group.com.xboard.client.ios"
@@ -22,7 +23,22 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private let log = OSLog(subsystem: "com.xboard.client.PacketTunnel", category: "tunnel")
 
     override func startTunnel(options: [String: NSObject]?) async throws {
+        guard LibboxVersion() == "1.10.7" || LibboxVersion() == "v1.10.7" else {
+            throw NSError(domain: "Sufe", code: -8, userInfo: [NSLocalizedDescriptionKey: "Libbox 版本与客户端配置不匹配，请重新安装客户端"])
+        }
         let configContent = try loadConfig()
+        let fileManager = FileManager.default
+        guard let base = fileManager.containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupId) else {
+            throw NSError(domain: "Sufe", code: -9, userInfo: [NSLocalizedDescriptionKey: "VPN 共享容器不可用"])
+        }
+        let setup = LibboxSetupOptions()
+        setup.basePath = base.path
+        setup.workingPath = base.appendingPathComponent("kernel", isDirectory: true).path
+        setup.tempPath = fileManager.temporaryDirectory.path
+        var setupError: NSError?
+        LibboxSetup(setup, &setupError)
+        if let setupError { throw setupError }
+
 
         let settings = NEPacketTunnelNetworkSettings(tunnelRemoteAddress: "172.19.0.1")
         settings.mtu = 1500
@@ -51,8 +67,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 userInfo: [NSLocalizedDescriptionKey: "LibboxNewService returned nil"]
             )
         }
-        try service.start()
-        self.boxService = service
+        do {
+            try service.start()
+            self.boxService = service
+        } catch {
+            try? service.close()
+            pi.detach()
+            platformInterface = nil
+            throw error
+        }
         os_log("sing-box started", log: log, type: .info)
     }
 
@@ -63,6 +86,59 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         boxService = nil
         platformInterface?.detach()
         platformInterface = nil
+    }
+
+    /// App-to-extension RPC keeps the controller secret inside the shared
+    /// trusted container and only exposes the operations the UI needs.
+    override func handleAppMessage(_ messageData: Data, completionHandler: ((Data?) -> Void)?) {
+        Task {
+            do {
+                guard boxService != nil,
+                      let message = try JSONSerialization.jsonObject(with: messageData) as? [String: String],
+                      let operation = message["operation"] else { throw URLError(.cannotConnectToHost) }
+                let config = try JSONSerialization.jsonObject(with: Data(loadConfig().utf8)) as? [String: Any]
+                let experimental = config?["experimental"] as? [String: Any]
+                let api = experimental?["clash_api"] as? [String: Any]
+                guard let address = api?["external_controller"] as? String,
+                      address == "127.0.0.1:9090", let secret = api?["secret"] as? String else { throw URLError(.badURL) }
+                var components = URLComponents(string: "http://127.0.0.1:9090")!
+                var body: Data?
+                let segmentCharacters = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#%"))
+                switch operation {
+                case "proxies": components.path = "/proxies"
+                case "traffic": components.path = "/connections"
+                case "latency":
+                    guard let node = message["node"], !node.isEmpty else { throw URLError(.badURL) }
+                    guard let encoded = node.addingPercentEncoding(withAllowedCharacters: segmentCharacters) else { throw URLError(.badURL) }
+                    components.percentEncodedPath = "/proxies/\(encoded)/delay"
+                    components.queryItems = [URLQueryItem(name: "url", value: "https://www.gstatic.com/generate_204"), URLQueryItem(name: "timeout", value: "5000")]
+                case "select":
+                    guard let group = message["group"], let node = message["node"], !group.isEmpty, !node.isEmpty else { throw URLError(.badURL) }
+                    guard let encoded = group.addingPercentEncoding(withAllowedCharacters: segmentCharacters) else { throw URLError(.badURL) }
+                    components.percentEncodedPath = "/proxies/\(encoded)"
+                    body = try JSONSerialization.data(withJSONObject: ["name": node])
+                default: throw URLError(.unsupportedURL)
+                }
+                guard let url = components.url else { throw URLError(.badURL) }
+                var request = URLRequest(url: url)
+                request.timeoutInterval = 8
+                request.httpMethod = body == nil ? "GET" : "PUT"
+                request.httpBody = body
+                request.setValue("Bearer \(secret)", forHTTPHeaderField: "Authorization")
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                let (data, response) = try await URLSession.shared.data(for: request)
+                guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { throw URLError(.badServerResponse) }
+                var payload: Any
+                if data.isEmpty { payload = NSNull() }
+                else { payload = try JSONSerialization.jsonObject(with: data) }
+                if operation == "traffic", let totals = payload as? [String: Any] {
+                    payload = ["uploadTotal": totals["uploadTotal"] ?? 0, "downloadTotal": totals["downloadTotal"] ?? 0]
+                }
+                completionHandler?(try JSONSerialization.data(withJSONObject: ["ok": true, "data": payload]))
+            } catch {
+                completionHandler?(try? JSONSerialization.data(withJSONObject: ["ok": false, "error": error.localizedDescription]))
+            }
+        }
     }
 
     // MARK: - helpers
@@ -97,14 +173,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 /// upstream sing-box-for-apple uses).
 final class XboardPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol {
     private weak var provider: PacketTunnelProvider?
+    private var networkMonitor: NWPathMonitor?
 
     init(provider: PacketTunnelProvider) {
         self.provider = provider
     }
 
     func detach() {
-        // Nothing to tear down here: sing-box owns the utun fd it obtained
-        // from `openTun` and closes it during `boxService.close()`.
+        networkMonitor?.cancel()
+        networkMonitor = nil
+        // Libbox duplicates the borrowed NE fd and closes its own duplicate.
+        // NetworkExtension retains ownership of packetFlow's original fd.
     }
 
     // MARK: - tun
@@ -119,15 +198,16 @@ final class XboardPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol {
     /// nothing worked). The correct, canonical path (matching
     /// sing-box-for-apple and wireguard-apple) is to locate the NE's backing
     /// `utun` socket fd and hand it to sing-box so it does I/O itself.
-    func openTun(_ options: LibboxTunOptionsProtocol?) throws -> Int32 {
-        guard let fd = Self.findUtunFileDescriptor() else {
+    func openTun(_ options: LibboxTunOptionsProtocol?, ret0_: UnsafeMutablePointer<Int32>?) throws {
+        let fd = LibboxGetTunnelFileDescriptor()
+        guard fd >= 0, let ret0_ else {
             throw NSError(
                 domain: "Xboard", code: -3,
                 userInfo: [NSLocalizedDescriptionKey:
                     "could not locate the NEPacketTunnelFlow utun file descriptor"]
             )
         }
-        return fd
+        ret0_.pointee = fd
     }
 
     /// sing-box→OS path. Unused once `openTun` returns a real fd (sing-box
@@ -138,42 +218,13 @@ final class XboardPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol {
         provider.writeBack(packet)
     }
 
-    /// Find the file descriptor of the `utun` interface NE created for this
-    /// extension. NE doesn't expose it directly, so we scan our open fds for
-    /// the one whose peer is the `com.apple.net.utun_control` kernel control
-    /// socket — the same approach wireguard-apple uses. Must run inside the
-    /// NE process (the fd table is per-process).
-    private static func findUtunFileDescriptor() -> Int32? {
-        var ctlInfo = ctl_info()
-        withUnsafeMutablePointer(to: &ctlInfo.ctl_name) {
-            $0.withMemoryRebound(to: CChar.self, capacity: MemoryLayout.size(ofValue: $0.pointee)) {
-                _ = strcpy($0, "com.apple.net.utun_control")
-            }
-        }
-        for fd: Int32 in 0...1024 {
-            var addr = sockaddr_ctl()
-            var len = socklen_t(MemoryLayout.size(ofValue: addr))
-            let ret = withUnsafeMutablePointer(to: &addr) {
-                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                    getpeername(fd, $0, &len)
-                }
-            }
-            if ret != 0 || addr.sc_family != AF_SYSTEM {
-                continue
-            }
-            if ctlInfo.ctl_id == 0 {
-                _ = ioctl(fd, CTLIOCGINFO, &ctlInfo)
-            }
-            if addr.sc_id == ctlInfo.ctl_id {
-                return fd
-            }
-        }
-        return nil
-    }
-
     // MARK: - interface monitor / auto-detect (delegate to platform)
 
-    func usePlatformAutoDetectInterfaceControl() -> Bool { true }
+    func usePlatformAutoDetectInterfaceControl() -> Bool { false }
+    // Swift's Objective-C importer shortens PlatformInterface method names
+    // in gomobile's 1.10 framework. Keep the explicit aliases for the ABI.
+    func usePlatformAutoDetectControl() -> Bool { false }
+    func autoDetectControl(_ fd: Int32) throws {}
 
     func autoDetectInterfaceControl(_ fd: Int32) throws {
         // Honor sing-box's request to bind a socket to the system's
@@ -182,10 +233,31 @@ final class XboardPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol {
         // having already rewritten the routing table.
     }
 
-    func usePlatformDefaultInterfaceMonitor() -> Bool { false }
+    func usePlatformDefaultInterfaceMonitor() -> Bool { true }
 
-    func startDefaultInterfaceMonitor(_ listener: LibboxInterfaceUpdateListenerProtocol?) throws {}
-    func closeDefaultInterfaceMonitor(_ listener: LibboxInterfaceUpdateListenerProtocol?) throws {}
+    func startDefaultInterfaceMonitor(_ listener: LibboxInterfaceUpdateListenerProtocol?) throws {
+        guard let listener else { return }
+        let monitor = NWPathMonitor()
+        networkMonitor = monitor
+        let ready = DispatchSemaphore(value: 0)
+        monitor.pathUpdateHandler = { path in
+            if path.status == .satisfied, let interface = path.availableInterfaces.first {
+                listener.updateDefaultInterface(interface.name, interfaceIndex: Int32(interface.index))
+            } else {
+                listener.updateDefaultInterface("", interfaceIndex: -1)
+            }
+            ready.signal()
+        }
+        monitor.start(queue: DispatchQueue(label: "sufe.vpn.network"))
+        guard ready.wait(timeout: .now() + 5) == .success else {
+            monitor.cancel()
+            networkMonitor = nil
+            throw NSError(domain: "Sufe", code: -10, userInfo: [NSLocalizedDescriptionKey: "无法确定底层网络"])
+        }
+    }
+    func closeDefaultInterfaceMonitor(_ listener: LibboxInterfaceUpdateListenerProtocol?) throws {
+        detach()
+    }
 
     func getInterfaces() throws -> LibboxNetworkInterfaceIteratorProtocol {
         return EmptyInterfaceIterator()
@@ -195,14 +267,21 @@ final class XboardPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol {
 
     func underNetworkExtension() -> Bool { true }
     func includeAllNetworks() -> Bool { false }
-    func readWIFIState() -> LibboxWIFIStateProtocol? { nil }
-    func usePackageMode() -> Bool { false }
-    func packageNameByUid(_ uid: Int32) throws -> String { "" }
-    func uidByPackageName(_ packageName: String?) throws -> Int32 { 0 }
-    func clashModeCallback(_ callback: LibboxClashModeCallbackProtocol?) throws {}
-    func systemCertificates() -> LibboxStringIteratorProtocol? { nil }
+    func readWIFIState() -> LibboxWIFIState? { nil }
+    func useProcFS() -> Bool { false }
+    func clearDNSCache() {}
+    func writeLog(_ message: String?) {
+        guard let message else { return }
+        os_log("%{private}@", log: .default, type: .info, message)
+    }
+    func findConnectionOwner(_ ipProtocol: Int32, sourceAddress: String?, sourcePort: Int32, destinationAddress: String?, destinationPort: Int32, ret0_: UnsafeMutablePointer<Int32>?) throws {
+        throw NSError(domain: "Sufe", code: -11, userInfo: [NSLocalizedDescriptionKey: "iOS 不提供应用进程归属"])
+    }
+    func packageName(byUid uid: Int32, error: NSErrorPointer) -> String { "" }
+    func uid(byPackageName packageName: String?, ret0_: UnsafeMutablePointer<Int32>?) throws { ret0_?.pointee = 0 }
     func usePlatformInterfaceGetter() -> Bool { false }
-    func sendNotification(_ notification: LibboxNotificationProtocol?) throws {}
+    func useGetter() -> Bool { false }
+    func send(_ notification: LibboxNotification?) throws {}
 }
 
 /// Empty iterator we can return when sing-box asks for the list of
@@ -210,5 +289,5 @@ final class XboardPlatformInterface: NSObject, LibboxPlatformInterfaceProtocol {
 /// doesn't expose them with useful precision.
 private final class EmptyInterfaceIterator: NSObject, LibboxNetworkInterfaceIteratorProtocol {
     func hasNext() -> Bool { false }
-    func next() -> LibboxNetworkInterfaceProtocol? { nil }
+    func next() -> LibboxNetworkInterface? { nil }
 }

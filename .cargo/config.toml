@@ -1,0 +1,7 @@
+# Keep JNI PT_LOAD segments compatible with Android's 16 KB page devices.
+# Target-specific flags avoid sending ELF options to host/MSVC build scripts.
+[target.aarch64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]
+
+[target.x86_64-linux-android]
+rustflags = ["-C", "link-arg=-Wl,-z,max-page-size=16384"]

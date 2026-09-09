@@ -61,14 +61,18 @@ impl SvcInstaller for RunasInstaller {
         }
         // Run the elevation off-thread; the Win32 dialog is modal and will
         // stall the tauri runtime if we await it inline.
-        tokio::task::spawn_blocking(move || run_elevated(&exe, "install"))
+        let sid = xboard_core::kernel::windows_pipe::current_user_sid()
+            .map_err(|e| LauncherError::Other(format!("读取当前 Windows 用户身份失败：{e}")))?;
+        let arguments = format!("install --allowed-sid {sid}");
+        tokio::task::spawn_blocking(move || run_elevated(&exe, &arguments))
             .await
             .map_err(|e| LauncherError::Other(format!("join: {e}")))??;
 
-        // Give SCM a moment to finish creating + auto-starting the service
-        // so the launcher's follow-up Ping doesn't race the install.
-        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-        Ok(())
+        for _ in 0..30 {
+            if ping_svc().await { return Ok(()); }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        Err(LauncherError::ServiceMissing("Sufe 服务已安装，但安全通信接口尚未就绪".into()))
     }
 
     async fn uninstall(&self) -> Result<(), LauncherError> {
@@ -118,9 +122,7 @@ fn run_elevated(exe: &Path, verb: &str) -> Result<(), LauncherError> {
         )));
     }
     if sei.hProcess.is_null() {
-        // Some shell verbs don't return a process handle — treat as success
-        // because `runas` should always give us one, but be defensive.
-        return Ok(());
+        return Err(LauncherError::Other("提权进程没有返回可验证的句柄".into()));
     }
 
     let process = sei.hProcess;
@@ -190,11 +192,10 @@ fn bundled_svc_path(app: &AppHandle) -> Option<PathBuf> {
 pub async fn ping_svc() -> bool {
     use std::time::Duration;
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-    use tokio::net::windows::named_pipe::ClientOptions;
-    use xboard_core::kernel::ipc::{Frame, FrameBody, Request, SVC_PIPE_PATH};
+    use xboard_core::kernel::ipc::{Frame, FrameBody, Request, Response, SVC_PIPE_PATH};
 
     let connect = tokio::time::timeout(Duration::from_millis(500), async {
-        ClientOptions::new().open(SVC_PIPE_PATH)
+        xboard_core::kernel::windows_pipe::open_service_pipe(SVC_PIPE_PATH)
     })
     .await;
     let mut client = match connect {
@@ -220,7 +221,8 @@ pub async fn ping_svc() -> bool {
     let mut reader = BufReader::new(read);
     let mut buf = String::new();
     let read = tokio::time::timeout(Duration::from_millis(500), reader.read_line(&mut buf)).await;
-    matches!(read, Ok(Ok(n)) if n > 0)
+    if !matches!(read, Ok(Ok(n)) if n > 0 && n < 16 * 1024) { return false; }
+    matches!(serde_json::from_str::<Frame>(&buf), Ok(Frame { id: 1, body: FrameBody::Response(Response::Pong { helper_version }) }) if helper_version == xboard_core::kernel::ipc::service_version())
 }
 
 /// Probe whether the service is registered with the SCM. Used by `helper_status`

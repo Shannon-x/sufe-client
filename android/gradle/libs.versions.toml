@@ -28,7 +28,8 @@ coroutines = "1.9.0"
 # Android (vs JNI codegen on Linux desktop). Pin to a release that ships
 # arm64-v8a + armeabi-v7a + x86_64 native shims, otherwise startup dies
 # in `Native.register` on first FFI call.
-jna = "5.15.0"
+# Includes the Android 16 KB page-size fixes and subsequent deadlock fix.
+jna = "5.18.0"
 
 # JSON (kotlinx-serialization) — only used for cache-side helpers like
 # decoding `data_json` blobs out of `CheckoutResponse`. The wire layer is

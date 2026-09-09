@@ -223,16 +223,34 @@ impl HttpClient {
     /// discount descriptor. The panel rejects invalid / expired / wrong-plan
     /// codes with an envelope error, which surfaces here as `ApiFailure`.
     pub async fn check_coupon(&self, code: &str, plan_id: i64) -> Result<CouponCheckResult> {
+        self.check_coupon_with_period(code, plan_id, None).await
+    }
+
+    pub async fn check_coupon_with_period(
+        &self,
+        code: &str,
+        plan_id: i64,
+        period: Option<&str>,
+    ) -> Result<CouponCheckResult> {
         #[derive(Serialize)]
         struct Body<'a> {
             code: &'a str,
             plan_id: i64,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            period: Option<&'a str>,
         }
         // `post_json` already strips the `{status,data}` envelope, so most
         // panels deliver the coupon record directly. A handful of forks emit
         // an extra `{data: ...}` wrapper inside the envelope — handle both.
         let raw: serde_json::Value = self
-            .post_json("/api/v1/user/coupon/check", &Body { code, plan_id })
+            .post_json(
+                "/api/v1/user/coupon/check",
+                &Body {
+                    code,
+                    plan_id,
+                    period,
+                },
+            )
             .await?;
         let inner = raw.get("data").cloned().unwrap_or(raw);
         serde_json::from_value(inner)

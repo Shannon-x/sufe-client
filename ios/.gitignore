@@ -4,6 +4,8 @@
 
 # Build outputs.
 build/
+.build/
+Vendor/Libbox.revision
 DerivedData/
 
 # Bundled binaries fetched at bootstrap (Libbox.xcframework from sing-box-for-apple,

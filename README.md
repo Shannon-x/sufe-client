@@ -1,55 +1,71 @@
-# xboard-client
+# SUFE Client
 
-A small, fast, multi-platform client for Xboard panels. Powered by **mihomo (Clash.Meta)**, with a hot-swappable kernel and a placeholder for additional kernels (e.g. Xray) in the future.
+为自己的 Xboard-sh 服务构建的专属客户端。桌面端使用 Vue 3 + Tauri 2 + Rust + mihomo，包含连接仪表盘、节点管理、套餐购买、订单、账户、公告、客服、日志与自定义分流规则。终端用户只需账户登录，不需输入面板地址。
 
-## Targets (Phase 1)
+桌面、Android 与 iOS 共用 Rust 业务与安全配置层，移动端分别使用 Compose 和 SwiftUI。两端已接入礼品卡、邀请、自定义规则、原生 Chatwoot、真实订单金额复核、动态验证码及会话保护；界面统一浅色、紫色和卡片风格。以下分别列出实现范围与平台验收状态。
 
-| Platform | Status | Bundle goal |
-|----------|--------|-------------|
-| Windows  | planned | ≤ 15 MB (excl. kernel) |
-| macOS    | planned | ≤ 15 MB Universal      |
-| Linux    | planned | ≤ 15 MB AppImage       |
-| Android  | planned | ≤ 30 MB APK (incl. kernel) |
-| iOS      | future  | —                       |
+| 平台 | 界面/核心 | 当前范围 | 验收边界 |
+|---|---|---|---|
+| Windows | Vue/Tauri + mihomo | 桌面业务界面；默认 TUN，首次连接安装专用权限服务；保留手动系统代理 | perMachine 安装到 Program Files；真实账号支付与订阅仍需对应环境 |
+| macOS | 同一 Vue/Tauri + mihomo | 共用桌面代码；默认 TUN，首次连接系统授权安装 helper | Apple Silicon / Intel 原生构建流程已配置；构建结果见平台记录，尚无 Apple 公证 |
+| Linux | 同一 Vue/Tauri + mihomo | 共用桌面代码；默认 TUN，deb 自动授予内核网络权限，AppImage 一次 polkit 授权 | 原生 deb / AppImage 构建与启动验证结果见平台记录 |
+| Android | Compose + Rust + mihomo | 登录/节点/VPN、套餐/订单、公告/工单、礼品卡/邀请、规则、原生客服和验证码 | 三 ABI APK 编译、签名、ELF/16 KB 检查通过；仍需设备启动、真实订阅、VPN 数据面与运营业务验收 |
+| iOS | SwiftUI + NetworkExtension + **sing-box/Libbox** | 同类原生业务入口、订单复核、验证码及 PacketTunnel 适配 | 27 个 Swift 文件通过语法解析；无 Xcode 类型编译与 Apple 签名，兼容内核仍需升级/真机验证 |
 
-## Layout
+## 先运行桌面
 
-```
-core/          Rust library — single source of truth (API, kernel, updater, profile)
-desktop/       Tauri 2.x app (Vue 3 + Naive UI)
-android/       Native Android app (Compose + Material 3)
-ci/            GitHub Actions workflows + signing scripts
-update-server/ Static metadata templates for self-hosted update channels
-docs/          Architecture / VPN / kernel-update notes
-kernels/       Local cache of mirrored mihomo binaries (gitignored)
-```
+准备 Node.js 24、Rust stable、Python 3.10+ 及对应系统的 Tauri 原生编译依赖。
 
-## Quickstart
-
-```bash
-just bootstrap            # install Rust + Tauri CLI + Android targets
-just core-test            # run core unit + integration tests
-just desktop-install      # install JS deps (npm) for the Tauri shell
-just desktop-check        # cargo check + clippy + vue-tsc on the desktop app
-just desktop-dev          # launch desktop app in dev mode
-just android-debug        # build android debug APK
-```
-
-### Desktop dev mode
-
-```bash
+```text
 cd desktop
-npm install --no-audit --fund=false --cache=$PWD/.npm-cache
-npm run tauri -- dev
+npm ci
+npm run dev
 ```
 
-The first launch compiles all Tauri/plugin dependencies — expect a few
-minutes. Subsequent runs are sub-second (incremental). The app opens
-straight on the login page; type any reachable Xboard backend URL +
-credentials and hit "登录".
+这是网页开发服务。完整真实客户端需要 Tauri 宿主；仅在开发时显式启用的预览数据不能连接 VPN、充值或付款。
 
-See `docs/architecture.md` for the full design (also mirrored in [`../streamed-moseying-firefly.md`](../.claude/plans/streamed-moseying-firefly.md)).
+Windows 从仓库根目录准备经过固定 SHA256 校验的官方 mihomo 与 Wintun：
 
-## Backend
+```text
+python scripts/install-kernel.py --target x86_64-pc-windows-msvc
+cargo build -p xboard-svc
+```
 
-Targets the API surface documented in [`../Xboard-API.md`](../Xboard-API.md) (cedar2025/Xboard derivative, Laravel 10 + Sanctum).
+将 `target/debug/xboard-svc.exe` 复制为 `desktop/src-tauri/binaries/xboard-svc-x86_64-pc-windows-msvc.exe`，再进入 `desktop` 执行 `npm run tauri -- dev`。macOS/Linux 的目标、构建依赖与发布步骤见 [SETUP.md](SETUP.md)。
+
+## 专属后端与功能开关
+
+[部署文档](docs/client-deployment.md) 描述 `SUFE_DEPLOYMENT_JSON` 构建配置、品牌、功能开关、多个 OSS 每个包含多个 API、签名与加密配置发布方法，以及对真实 `sufe-middleware-rs` Stealth-v1 的兼容。
+
+桌面与移动已通过共享核心接入套餐、优惠券、订单、礼品卡、邀请、公告与工单。购买流程先生成订单并展示服务端实际应付，再确认支付；既有订单可继续付款，成功以真实订单状态为准。移动端规则按账户保存，Android 在连接时注入，iOS 在转换为 sing-box 配置前注入。
+
+Chatwoot 需配置运营方自己的 Public API Inbox，默认关闭；已接入原生消息界面和受信任 REST 桥接，应用关闭后的推送不属于已完成能力。登录、注册、找回密码和发送邮件支持按站点配置启用 Turnstile、reCAPTCHA v2/v3，真实站点密钥仍需设备验收。当前本地 Xboard-sh-1 源码没有可验证的独立充值/签到接口，因此关闭这些入口；线上若安装不同插件，需要补齐该插件的真实契约后启用。
+
+默认后端保留原项目的 `https://imitate.cnqq.de`。2026-09-09 只读公共配置请求返回 HTTP 200；这仅证明公共接口可达，不证明账号、支付渠道或订阅连接已经验证。
+
+## 检查与文档
+
+本轮已确认：Rust 核心测试 **96/96**、桌面 Playwright **22/22**（包括 4 项生产 CSP 回归）、账单计算测试 **3/3**，前端生产构建通过，npm 依赖审计 **0** 项已知漏洞。iOS 的 **27/27** 个 Swift 文件通过语法解析，验证码 JavaScript 的 **3/3** 组模拟服务商检查通过；这些不替代 Xcode 编译或真实网络、支付和验证码验收。
+
+本地审阅包为 [Windows NSIS](artifacts/Sufe_0.1.0_x64-setup.exe) 与 [Android APK](artifacts/Sufe-0.1.0-android-debug.apk)，均采用 debug 构建。SHA256、具体测试证据与设备验收边界见 [交付记录](docs/delivery-status.md)。macOS/Linux 的原生构建与安装说明见 [平台构建记录](docs/DESKTOP-NATIVE-BUILDS.md)；默认 TUN 的权限与升级机制见 [桌面 TUN](docs/DESKTOP-TUN.md)。
+
+```text
+cargo test -p xboard-core --lib
+cargo check -p xboard-desktop
+cd desktop
+npm run build
+```
+
+- [部署与构建](SETUP.md)
+- [加密配置与真实接口](docs/client-deployment.md)
+- [交付范围和验证记录](docs/delivery-status.md)
+- [移动端共享接口](docs/mobile-ffi-contract.md)
+- [移动验证码配置与验收](docs/mobile-captcha.md)
+- [固定下载哈希与来源](ci/checksums/README.md)
+- [Android 开发说明](android/README.md)
+- [iOS 开发说明](ios/README.md)
+- [原始审计报告](审计报告.md)
+
+仓库结构：`core/` 为共享 Rust 核心；`desktop/` 为桌面应用；`android/` 和 `ios/` 为原生移动壳；`ci/` 为构建与校验脚本；`scripts/` 为跨平台安装与加密配置工具。内核运行时更新模块、Android自动更新、iOS发行流水线不可视为已交付能力。
+
+默认桌面/Android 内核已统一为 mihomo v1.19.30，Windows 采用 compatible 归档以覆盖更广的 CPU。归档按官方 release API SHA256 固定验证；可用 `python scripts/install-kernel.py --target x86_64-pc-windows-msvc --cache-only` 仅准备缓存，`--standard` 可显式选择标准构建。iOS 仍使用其独立的 Libbox 兼容基线。

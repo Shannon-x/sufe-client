@@ -166,6 +166,18 @@ pub fn clear_session(app: &AppHandle, state: &State<'_, AppState>) {
     }
 
     *state.auth.write() = None;
+    state
+        .connection_generation
+        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    if let Some(manager) = state.kernel.get().cloned() {
+        let operation_lock = state.connection_lock.clone();
+        tauri::async_runtime::spawn(async move {
+            let _operation = operation_lock.lock().await;
+            if let Err(error) = manager.disconnect().await {
+                tracing::warn!(%error, "session cleanup could not stop kernel");
+            }
+        });
+    }
 
     if let Some(persistence) = state.snapshot_persistence() {
         let _ = persistence.clear_session();

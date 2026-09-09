@@ -1,6 +1,9 @@
 package com.xboard.client.ui.theme
 
 import android.os.Build
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Shapes
+import androidx.compose.ui.unit.dp
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
@@ -14,26 +17,26 @@ import androidx.compose.ui.platform.LocalContext
 // brand_primary / brand_secondary / brand_tertiary so XML-rendered
 // icons match the Compose theme.
 
-private val BrandPrimary = Color(0xFF7C5CFF)
-private val BrandSecondary = Color(0xFF00C48C)
-private val BrandTertiary = Color(0xFFFF6380)
+private val BrandPrimary = Color(0xFF7165E9)
+private val BrandSecondary = Color(0xFF279A84)
+private val BrandTertiary = Color(0xFFE57896)
 private val ErrorColor = Color(0xFFFF4057)
 
 private val LightColors = lightColorScheme(
     primary = BrandPrimary,
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFE0E7FF),
+    primaryContainer = Color(0xFFEEEBFF),
     onPrimaryContainer = Color(0xFF1E1B4B),
     secondary = BrandSecondary,
     onSecondary = Color.White,
     tertiary = BrandTertiary,
     onTertiary = Color.White,
-    background = Color(0xFFFAFAFA),
-    onBackground = Color(0xFF111827),
+    background = Color(0xFFF6F7FB),
+    onBackground = Color(0xFF242539),
     surface = Color.White,
-    onSurface = Color(0xFF111827),
+    onSurface = Color(0xFF242539),
     surfaceVariant = Color(0xFFF3F4F6),
-    onSurfaceVariant = Color(0xFF4B5563),
+    onSurfaceVariant = Color(0xFF858697),
     error = ErrorColor,
     onError = Color.White,
 )
@@ -65,7 +68,7 @@ private val DarkColors = darkColorScheme(
  */
 @Composable
 fun XboardTheme(
-    darkTheme: Boolean = true,
+    darkTheme: Boolean = false,
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {
@@ -80,6 +83,7 @@ fun XboardTheme(
     MaterialTheme(
         colorScheme = colors,
         typography = MaterialTheme.typography,
+        shapes = Shapes(small = RoundedCornerShape(12.dp), medium = RoundedCornerShape(18.dp), large = RoundedCornerShape(24.dp)),
         content = content,
     )
 }

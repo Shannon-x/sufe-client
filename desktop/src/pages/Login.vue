@@ -42,7 +42,10 @@ const model = reactive({
 });
 
 const rules: FormRules = {
-  email: { required: true, trigger: ["blur"], message: t("login.fillAll") },
+  email: [
+    { required: true, trigger: ["blur"], message: t("login.fillAll") },
+    { type: "email", trigger: ["blur"], message: "请输入有效的邮箱地址" },
+  ],
   password: { required: true, trigger: ["blur"], message: t("login.fillAll") },
 };
 
@@ -129,7 +132,7 @@ async function onSubmit() {
           object-fit="contain"
           class="brand-logo"
         />
-        <NH1 class="brand">{{ t("app.title") }}</NH1>
+        <NH1 class="brand">欢迎回来</NH1>
         <!-- Plain text only — never v-html — backend description is untrusted. -->
         <NText depth="3">
           {{ siteConfig?.app_description || t("app.tagline") }}
@@ -148,6 +151,7 @@ async function onSubmit() {
           <NInput
             v-model:value="model.email"
             type="text"
+            :input-props="{ autocomplete: 'username', inputmode: 'email' }"
             placeholder="user@example.com"
             clearable
           />
@@ -156,6 +160,7 @@ async function onSubmit() {
           <NInput
             v-model:value="model.password"
             type="password"
+            :input-props="{ autocomplete: 'current-password' }"
             show-password-on="mousedown"
             placeholder="••••••••"
             @keyup.enter="onSubmit"

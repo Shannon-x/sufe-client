@@ -19,9 +19,9 @@ struct NodesSheet: View {
                             ) {
                                 Task {
                                     await model.selectProxy(group: group.name, node: node)
-                                    await model.refreshProxies()
                                 }
                             }
+                            .disabled(group.kind != "Selector")
                         }
                     } header: {
                         HStack {
@@ -50,15 +50,20 @@ struct NodesSheet: View {
         }
     }
 
-    private func testGroup(_ group: ProxyGroup) async {
+    private func testGroup(_ group: ProxyGroupSnapshot) async {
         probing.insert(group.name)
         defer { probing.remove(group.name) }
         await withTaskGroup(of: (String, UInt32).self) { tg in
-            for node in group.all {
+            var remaining = group.all.makeIterator()
+            for _ in 0..<min(4, group.all.count) {
+                guard let node = remaining.next() else { break }
                 tg.addTask { (node, await model.latencyTest(node)) }
             }
             for await (node, ms) in tg {
                 latencies[node] = ms
+                if let next = remaining.next(), !Task.isCancelled {
+                    tg.addTask { (next, await model.latencyTest(next)) }
+                }
             }
         }
     }

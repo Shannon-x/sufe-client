@@ -5,6 +5,11 @@ import com.xboard.client.core.Client
 import com.xboard.client.core.ConnectionManager
 import com.xboard.client.core.TunDelegate
 import com.xboard.client.secure.AndroidSecureStore
+import com.xboard.client.vpn.AndroidTunDelegate
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * Process-singleton that owns the long-lived UniFFI handles.
@@ -23,18 +28,12 @@ import com.xboard.client.secure.AndroidSecureStore
  *      permission. Resolve it via [connectionManager] once the delegate
  *      is ready; calling it again with the same delegate is idempotent.
  *
- * Backend URL + locale are resolved from BuildConfig defaults but can be
- * overridden in EncryptedSharedPreferences ("xboard.backend_base_url",
- * "xboard.locale") — typically by a hidden settings screen for QA, not
- * surfaced in the user UI.
+ * Backend endpoints, encrypted discovery and feature policy come from the
+ * shared deployment configuration. UI cannot supply another airport URL.
  */
 class AppContainer private constructor(private val app: Context) {
 
     private val store: AndroidSecureStore by lazy { AndroidSecureStore(app) }
-
-    private val backendBaseUrl: String by lazy {
-        store.get(KEY_BACKEND_URL) ?: BuildConfig.DEFAULT_BACKEND_URL
-    }
 
     private val locale: String by lazy {
         store.get(KEY_LOCALE) ?: app.resources.configuration.locales[0].toLanguageTag()
@@ -42,11 +41,13 @@ class AppContainer private constructor(private val app: Context) {
 
     /** Lazily constructed; safe to call from any thread after [warmUp]. */
     val client: Client by lazy {
-        Client(backendBaseUrl, locale, store)
+        Client.forDeployment(locale, store)
     }
 
     @Volatile
     private var managerInternal: ConnectionManager? = null
+    private var delegateInternal: AndroidTunDelegate? = null
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /**
      * Returns a [ConnectionManager] bound to [tunDelegate]. The first call
@@ -55,9 +56,12 @@ class AppContainer private constructor(private val app: Context) {
      * [resetConnectionManager] first.
      */
     fun connectionManager(tunDelegate: TunDelegate?): ConnectionManager {
-        managerInternal?.let { return it }
         synchronized(this) {
+            if (tunDelegate is AndroidTunDelegate) {
+                delegateInternal?.rebindFrom(tunDelegate)
+            }
             managerInternal?.let { return it }
+            delegateInternal = tunDelegate as? AndroidTunDelegate
             val kernelDir = app.applicationInfo.nativeLibraryDir
             val kernelPath = "$kernelDir/libmihomo.so"
             val workDir = app.filesDir.resolve("kernel").apply { mkdirs() }.absolutePath
@@ -70,6 +74,12 @@ class AppContainer private constructor(private val app: Context) {
                 tunDelegate,
             ).also { managerInternal = it }
         }
+    }
+
+    /** Called when Android revokes or destroys the VPN service. */
+    fun disconnectVpn() {
+        val manager = managerInternal ?: return
+        serviceScope.launch { runCatching { manager.disconnect() } }
     }
 
     /**
@@ -97,7 +107,6 @@ class AppContainer private constructor(private val app: Context) {
     }
 
     companion object {
-        private const val KEY_BACKEND_URL = "xboard.backend_base_url"
         private const val KEY_LOCALE = "xboard.locale"
 
         @Volatile

@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 struct OrdersView: View {
     @Bindable var model: AppModel
 
@@ -13,7 +14,7 @@ struct OrdersView: View {
                     )
                 } else {
                     List(orders, id: \.id) { order in
-                        OrderCard(order: order) {
+                        OrderCard(model: model, order: order) {
                             Task {
                                 await model.cancelOrder(order.tradeNo)
                                 await model.refreshOrders()
@@ -33,7 +34,9 @@ struct OrdersView: View {
     }
 }
 
+@MainActor
 private struct OrderCard: View {
+    let model: AppModel
     let order: Order
     let onCancel: () -> Void
 
@@ -63,8 +66,13 @@ private struct OrderCard: View {
                     value: formatDateTime(created)
                 )
             }
-            if order.status == 0 {
-                HStack {
+            HStack {
+                NavigationLink {
+                    OrderPaymentView(model: model, tradeNo: order.tradeNo)
+                } label: {
+                    Text(order.status == 0 ? "继续支付" : "查看详情")
+                }.buttonStyle(.borderedProminent)
+                if order.status == 0 {
                     Spacer()
                     Button(String(localized: "orders.action.cancel"), role: .destructive,
                            action: onCancel)

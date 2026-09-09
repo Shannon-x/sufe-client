@@ -14,14 +14,12 @@
 //! Connect flow (TUN-first):
 //!
 //! ```text
-//! fetch → [downgrade?] → write yaml → launcher.spawn → driver.start →
+//! fetch → authorize requested mode → write yaml → launcher.spawn → driver.start →
 //! (optional system-proxy set) → Connected
 //! ```
 //!
-//! The state machine prefers TUN; if `launcher.ensure_privileged()` reports
-//! `NeedsConsent` / `ServiceMissing` / `NotPermitted` / `Unsupported`, the
-//! manager transparently downgrades to `TunnelMode::SystemProxy` and re-runs
-//! the kernel without the TUN block, then sets the OS proxy.
+//! TUN is the default. A failed privilege request stops the connection and
+//! preserves that choice. System proxy runs only when explicitly selected.
 //!
 //! Disconnect reverses the order: clear OS proxy → driver.stop (detach) →
 //! launcher.stop (kill kernel).
@@ -46,6 +44,7 @@ use super::launcher::{
     KernelFailure, KernelLauncher, KernelSpawnSpec, LaunchHandle, LauncherError,
 };
 use crate::error::{Result, XboardError};
+use crate::profile::custom_rules::{apply_custom_rules, validate_rules, CustomRule};
 use crate::profile::{patch_mihomo_with_tun_fd, ProfileFetcher, TunnelMode as ProfileTunnelMode};
 use crate::tunnel::{ProxyEndpoint, SystemProxySetter};
 
@@ -229,6 +228,8 @@ pub struct KernelManager {
     /// Last subscribe URL passed to `connect`, so `reconnect` can re-establish
     /// after a kernel crash without the caller threading it back through.
     last_subscribe_url: RwLock<Option<String>>,
+    custom_rules_lock: tokio::sync::Mutex<()>,
+    custom_rules_enabled: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for KernelManager {
@@ -282,6 +283,8 @@ impl KernelManager {
             sysproxy_guard: parking_lot::Mutex::new(None),
             proxy_guard_enabled: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             last_subscribe_url: RwLock::new(None),
+            custom_rules_lock: tokio::sync::Mutex::new(()),
+            custom_rules_enabled: std::sync::atomic::AtomicBool::new(true),
         }
     }
 
@@ -316,6 +319,47 @@ impl KernelManager {
     /// sandbox forbids). Passing `None` reverts to native-device behaviour.
     pub fn set_tun_fd(&self, fd: Option<i32>) {
         *self.tun_fd.write() = fd;
+    }
+
+    /// Validated user rules persist across app/kernel restarts. A running
+    /// session keeps its current config until the next connect/reload.
+    pub fn set_custom_rules_enabled(&self, enabled: bool) {
+        self.custom_rules_enabled
+            .store(enabled, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    async fn rules_for_config(&self) -> Result<Vec<CustomRule>> {
+        if self
+            .custom_rules_enabled
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            self.custom_rules().await
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    pub async fn set_custom_rules(&self, rules: Vec<CustomRule>) -> Result<()> {
+        validate_rules(&rules)?;
+        let _lock = self.custom_rules_lock.lock().await;
+        tokio::fs::create_dir_all(&self.work_dir).await?;
+        let staging = self.work_dir.join("custom-rules.json.tmp");
+        tokio::fs::write(&staging, serde_json::to_vec_pretty(&rules)?).await?;
+        tokio::fs::rename(&staging, self.work_dir.join("custom-rules.json")).await?;
+        Ok(())
+    }
+
+    pub async fn custom_rules(&self) -> Result<Vec<CustomRule>> {
+        let _lock = self.custom_rules_lock.lock().await;
+        match tokio::fs::read(self.work_dir.join("custom-rules.json")).await {
+            Ok(bytes) => {
+                let rules: Vec<CustomRule> = serde_json::from_slice(&bytes)?;
+                validate_rules(&rules)?;
+                Ok(rules)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Snapshot stream of kernel health events (crash / unresponsive /
@@ -546,24 +590,13 @@ impl KernelManager {
             stage: ConnectStage::Elevating,
             mode: requested,
         });
-        let (final_mode, downgraded) = match requested {
-            TunnelMode::SystemProxy => (TunnelMode::SystemProxy, false),
+        let final_mode = match requested {
+            TunnelMode::SystemProxy => TunnelMode::SystemProxy,
             TunnelMode::Tun => match self.launcher.ensure_privileged().await {
-                Ok(()) => (TunnelMode::Tun, false),
-                Err(LauncherError::NeedsConsent(_))
-                | Err(LauncherError::ServiceMissing(_))
-                | Err(LauncherError::NotPermitted(_))
-                | Err(LauncherError::Unsupported) => (TunnelMode::SystemProxy, true),
-                Err(other) => return self.fail(requested, format!("elevate: {other}")),
+                Ok(()) => TunnelMode::Tun,
+                Err(other) => return self.fail(requested, format!("TUN 启动需要系统授权，请允许辅助服务安装后重试；也可在设置中手动选择系统代理。{other}")),
             },
         };
-
-        if downgraded {
-            self.publish(ConnectionState::Connecting {
-                stage: ConnectStage::FallbackProxy,
-                mode: final_mode,
-            });
-        }
 
         // Phase C: patch + write YAML to cfg_path.
         self.publish(ConnectionState::Connecting {
@@ -592,6 +625,14 @@ impl KernelManager {
         if let Err(e) = tokio::fs::create_dir_all(&self.work_dir).await {
             return self.fail(final_mode, format!("mkdir work_dir: {e}"));
         }
+        let patched = match self
+            .rules_for_config()
+            .await
+            .and_then(|rules| apply_custom_rules(&patched, &rules))
+        {
+            Ok(yaml) => yaml,
+            Err(e) => return self.fail(final_mode, format!("自定义规则无效：{e}")),
+        };
         let cfg_path = self.work_dir.join("config.yaml");
         let log_path = self.work_dir.join("mihomo.log");
         if let Err(e) = tokio::fs::write(&cfg_path, &patched).await {
@@ -613,6 +654,7 @@ impl KernelManager {
             log_path,
             controller_addr: controller_addr.clone(),
             controller_secret: session_secret.clone(),
+            tun_fd,
         };
         let launch_handle = match retry_with_backoff(
             "kernel spawn",
@@ -788,6 +830,8 @@ impl KernelManager {
 
         let handle = tokio::spawn(async move {
             let client = match reqwest::Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
                 .timeout(HEARTBEAT_TIMEOUT)
                 .build()
             {
@@ -1226,6 +1270,146 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+
+    #[derive(Debug)]
+    struct DeniedTun;
+    #[async_trait::async_trait]
+    impl KernelLauncher for DeniedTun {
+        async fn ensure_privileged(&self) -> std::result::Result<(), LauncherError> {
+            Err(LauncherError::NeedsConsent("test cancellation".into()))
+        }
+        async fn spawn(
+            &self,
+            _: KernelSpawnSpec,
+        ) -> std::result::Result<LaunchHandle, LauncherError> {
+            panic!("a denied TUN request must never launch a system-proxy kernel")
+        }
+        async fn stop(&self, _: LaunchHandle) -> std::result::Result<(), LauncherError> {
+            Ok(())
+        }
+        fn name(&self) -> &'static str {
+            "denied-tun-test"
+        }
+    }
+
+    #[tokio::test]
+    async fn denied_default_tun_stays_disconnected_without_fallback_or_config_write() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/subscription", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            socket.read(&mut request).await.unwrap();
+            let body = "proxies: [{name: test, type: socks5, server: example.com, port: 1080}]\nrules: ['MATCH,DIRECT']\n";
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+        });
+        let dir = std::env::temp_dir().join(format!("sufe-tun-denied-{}", uuid::Uuid::new_v4()));
+        let manager = KernelManager::new(
+            Arc::new(crate::kernel::MihomoDriver::new()),
+            Arc::new(DeniedTun),
+            None,
+            ProfileFetcher::new(
+                crate::api::HttpClient::new("https://example.invalid", "zh-CN").unwrap(),
+                dir.join("cache"),
+            ),
+            dir.join("missing-mihomo"),
+            dir.clone(),
+        );
+        assert_eq!(manager.requested_mode(), TunnelMode::Tun);
+        let mut events = manager.listeners.subscribe();
+        assert!(manager
+            .connect(&url)
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("TUN"));
+        assert!(matches!(
+            *manager.state.read(),
+            ConnectionState::Error {
+                mode: TunnelMode::Tun,
+                ..
+            }
+        ));
+        assert!(!dir.join("config.yaml").exists());
+        while let Ok(event) = events.try_recv() {
+            assert!(!matches!(
+                event,
+                ConnectionState::Connected { .. }
+                    | ConnectionState::Connecting {
+                        stage: ConnectStage::FallbackProxy,
+                        ..
+                    }
+            ));
+        }
+        server.await.unwrap();
+        tokio::fs::remove_dir_all(dir).await.unwrap();
+    }
+
+    fn rule_test_manager(work_dir: PathBuf) -> KernelManager {
+        KernelManager::new(
+            Arc::new(crate::kernel::MihomoDriver::new()),
+            Arc::new(super::super::launcher::DirectLauncher::new()),
+            None,
+            ProfileFetcher::new(
+                crate::api::HttpClient::new("https://example.invalid", "zh-CN").unwrap(),
+                work_dir.join("cache"),
+            ),
+            work_dir.join("mihomo"),
+            work_dir,
+        )
+    }
+
+    #[tokio::test]
+    async fn custom_rules_persist_and_invalid_update_preserves_existing() {
+        let dir = std::env::temp_dir().join(format!("sufe-rules-{}", uuid::Uuid::new_v4()));
+        let manager = rule_test_manager(dir.clone());
+        let rule = CustomRule {
+            id: "one".into(),
+            kind: "DOMAIN-SUFFIX".into(),
+            value: "example.com".into(),
+            target: "DIRECT".into(),
+            enabled: true,
+        };
+        manager.set_custom_rules(vec![rule.clone()]).await.unwrap();
+        let reopened = rule_test_manager(dir.clone());
+        assert_eq!(reopened.custom_rules().await.unwrap(), vec![rule.clone()]);
+        let mut bad = rule.clone();
+        bad.value = "example.com,REJECT".into();
+        assert!(manager.set_custom_rules(vec![bad]).await.is_err());
+        assert_eq!(manager.custom_rules().await.unwrap(), vec![rule.clone()]);
+        manager.set_custom_rules_enabled(false);
+        assert!(manager.rules_for_config().await.unwrap().is_empty());
+        assert_eq!(manager.custom_rules().await.unwrap(), vec![rule.clone()]);
+        manager.set_custom_rules_enabled(true);
+        assert_eq!(manager.rules_for_config().await.unwrap(), vec![rule]);
+        tokio::fs::remove_dir_all(dir).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn custom_rules_reports_storage_failure() {
+        let path =
+            std::env::temp_dir().join(format!("sufe-rules-blocked-{}", uuid::Uuid::new_v4()));
+        tokio::fs::write(&path, "a regular file blocks directory creation")
+            .await
+            .unwrap();
+        let manager = rule_test_manager(path.clone());
+        assert!(manager.set_custom_rules(vec![]).await.is_err());
+        assert_eq!(
+            tokio::fs::read_to_string(&path).await.unwrap(),
+            "a regular file blocks directory creation"
+        );
+        tokio::fs::remove_file(path).await.unwrap();
+    }
 
     /// `retry_with_backoff` returns `Ok` on the first try and never sleeps.
     #[tokio::test]

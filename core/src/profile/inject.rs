@@ -29,9 +29,8 @@ fn default_device_name() -> &'static str {
     if cfg!(target_os = "macos") {
         "utun1989"
     } else {
-        // Both wintun (Windows) and Linux TUN accept any name; "Mihomo" is
-        // recognisable in `ifconfig`/Network Connections panel.
-        "Mihomo"
+        // Keep our interface distinct from other clients' common "Mihomo".
+        "Sufe"
     }
 }
 
@@ -108,6 +107,14 @@ fn patch_mihomo_inner(
         Value::Number(mixed_port.into()),
     );
     doc.insert(Value::String("allow-lan".into()), Value::Bool(false));
+    let mut profile = doc
+        .get(Value::String("profile".into()))
+        .and_then(Value::as_mapping)
+        .cloned()
+        .unwrap_or_default();
+    profile.insert(Value::String("store-selected".into()), Value::Bool(true));
+    profile.insert(Value::String("store-fake-ip".into()), Value::Bool(true));
+    doc.insert(Value::String("profile".into()), Value::Mapping(profile));
     doc.insert(
         Value::String("log-level".into()),
         Value::String("info".into()),
@@ -127,6 +134,22 @@ fn patch_mihomo_inner(
             // existing fd and NOT try to create/route a device of its own
             // (the app sandbox would deny it).
             let fd = tun_fd.expect("matched tun_fd.is_some()");
+            if fd < 3 {
+                return Err(XboardError::Config("invalid host TUN descriptor".into()));
+            }
+            // Remove stale desktop-only settings supplied by subscriptions.
+            // Omitting insertion does not remove values already in the map.
+            for key in [
+                "device",
+                "strict-route",
+                "auto-redirect",
+                "iproute2-table-index",
+                "iproute2-rule-index",
+                "route-address-set",
+                "route-exclude-address-set",
+            ] {
+                tun.remove(Value::String(key.into()));
+            }
             tun.insert(Value::String("enable".into()), Value::Bool(true));
             // gVisor user-space stack: the only one that works without the
             // raw-socket / routing privileges a sandboxed app lacks.
@@ -270,13 +293,29 @@ fn patch_dns(doc: &mut Mapping) {
         .unwrap_or_else(Mapping::new);
 
     insert_if_missing(&mut dns, "enable", Value::Bool(true));
-    insert_if_missing(&mut dns, "listen", Value::String("0.0.0.0:1053".into()));
+    insert_if_missing(&mut dns, "listen", Value::String("127.0.0.1:1053".into()));
     insert_if_missing(&mut dns, "enhanced-mode", Value::String("fake-ip".into()));
-    insert_if_missing(
-        &mut dns,
-        "fake-ip-range",
-        Value::String("198.18.0.1/16".into()),
-    );
+    // mihomo v1.19.30 derives the desktop TUN IPv4 from dns.fake-ip-range;
+    // tun.inet4-address is not parsed. Avoid the common Clash 198.18.0.1
+    // address while preserving an operator's explicitly customized range.
+    let desktop = cfg!(any(
+        target_os = "windows",
+        target_os = "macos",
+        target_os = "linux"
+    ));
+    let fake_range = Value::String("fake-ip-range".into());
+    if desktop
+        && (dns.get(&fake_range).is_none()
+            || dns.get(&fake_range).and_then(Value::as_str) == Some("198.18.0.1/16"))
+    {
+        dns.insert(fake_range, Value::String("198.19.0.1/16".into()));
+    } else {
+        insert_if_missing(
+            &mut dns,
+            "fake-ip-range",
+            Value::String("198.18.0.1/16".into()),
+        );
+    }
     insert_if_missing(
         &mut dns,
         "fake-ip-filter-mode",
@@ -489,6 +528,38 @@ mod tests {
     }
 
     #[test]
+    fn mobile_tun_removes_existing_desktop_settings() {
+        let yaml = "tun:\n  device: tun99\n  strict-route: true\n  auto-redirect: true\n  iproute2-table-index: 123\n";
+        let out =
+            patch_mihomo_with_tun_fd(yaml, "127.0.0.1:9090", "s", 7890, TunnelMode::Tun, Some(42))
+                .unwrap();
+        let doc = parse(&out);
+        let tun = doc["tun"].as_mapping().unwrap();
+        for key in [
+            "device",
+            "strict-route",
+            "auto-redirect",
+            "iproute2-table-index",
+        ] {
+            assert!(
+                !tun.contains_key(Value::String(key.into())),
+                "{key} survived"
+            );
+        }
+        for fd in [-1, 0, 1, 2] {
+            assert!(patch_mihomo_with_tun_fd(
+                yaml,
+                "127.0.0.1:9090",
+                "s",
+                7890,
+                TunnelMode::Tun,
+                Some(fd)
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
     fn no_tun_fd_keeps_native_device_mode() {
         // Desktop path (fd None) is unchanged: native device, auto-route on.
         let out = patch_mihomo("", "127.0.0.1:9090", "s", 7890, TunnelMode::Tun).unwrap();
@@ -504,6 +575,41 @@ mod tests {
             &Value::Bool(true)
         );
         assert!(tun.get(Value::String("device".into())).is_some());
+    }
+
+    #[test]
+    #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+    fn desktop_tun_uses_distinct_interface_and_fake_ip_range() {
+        for yaml in ["", "dns: {fake-ip-range: 198.18.0.1/16}"] {
+            let out =
+                patch_mihomo(yaml, "127.0.0.1:9090", "secret", 7890, TunnelMode::Tun).unwrap();
+            let value: Value = serde_yaml::from_str(&out).unwrap();
+            assert_eq!(
+                value["dns"]["fake-ip-range"].as_str(),
+                Some("198.19.0.1/16")
+            );
+            assert_eq!(
+                value["tun"]["device"].as_str(),
+                Some(if cfg!(target_os = "macos") {
+                    "utun1989"
+                } else {
+                    "Sufe"
+                })
+            );
+        }
+        let customized = patch_mihomo(
+            "dns: {fake-ip-range: 198.19.128.1/17}",
+            "127.0.0.1:9090",
+            "secret",
+            7890,
+            TunnelMode::Tun,
+        )
+        .unwrap();
+        let value: Value = serde_yaml::from_str(&customized).unwrap();
+        assert_eq!(
+            value["dns"]["fake-ip-range"].as_str(),
+            Some("198.19.128.1/17")
+        );
     }
 
     #[test]

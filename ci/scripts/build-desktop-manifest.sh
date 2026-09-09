@@ -27,7 +27,7 @@ trap 'rm -rf "${TMP}"' EXIT
 
 # Pull every asset for the tag locally — easier than guessing names.
 # Note: pattern '' would mean "all"; gh prefers omitting the flag for that.
-gh release download "${TAG}" --repo "${REPO}" --dir "${TMP}" --skip-existing || true
+gh release download "${TAG}" --repo "${REPO}" --dir "${TMP}" --skip-existing
 
 # Map (filename suffix → tauri platform key). Order matters: longer
 # suffixes first so the .tar.gz on linux doesn't shadow the .deb.
@@ -78,11 +78,21 @@ for entry in "${PATTERNS[@]}"; do
             ;;
     esac
 
+    if [[ -z "${sig}" ]]; then
+        echo "Missing updater signature for ${fname}" >&2
+        exit 1
+    fi
+
     PLATFORMS_JSON="$(jq \
         --arg key "${key}" --arg url "${url}" --arg sig "${sig}" \
         '.[$key] = { url: $url, signature: $sig }' \
         <<<"${PLATFORMS_JSON}")"
 done
+
+if ! jq -e 'has("darwin-aarch64") and has("darwin-x86_64") and has("windows-x86_64") and has("linux-x86_64")' <<<"${PLATFORMS_JSON}" >/dev/null; then
+    echo 'Incomplete desktop updater platforms; refusing to publish an empty/partial manifest' >&2
+    exit 1
+fi
 
 jq -n \
     --arg version "${VERSION}" \

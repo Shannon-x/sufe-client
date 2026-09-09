@@ -10,7 +10,9 @@
 //! treat a missing key as `Ok(None)`. We translate that case here so the
 //! `SecureStore` trait surface stays simple.
 
-use crate::error::{Result, XboardError};
+use crate::error::Result;
+#[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
+use crate::error::XboardError;
 
 pub trait SecureStore: Send + Sync + std::fmt::Debug {
     fn put(&self, key: &str, value: &str) -> Result<()>;

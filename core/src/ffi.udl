@@ -250,6 +250,8 @@ dictionary UserInfo {
     i64? expired_at;
     string? uuid;
     string? avatar_url;
+    boolean banned;
+    u64? transfer_enable;
 };
 
 dictionary SubscribeInfo {
@@ -425,6 +427,36 @@ interface Client {
     /// methods — a dummy in-memory impl is fine for tests.
     [Throws=FfiError]
     constructor(string backend_base_url, string locale, SecureStore secure);
+
+    /// Operator-owned embedded deployment; production mobile entry point.
+    [Name=for_deployment, Throws=FfiError]
+    constructor(string locale, SecureStore secure);
+
+    /// JSON contracts are documented in docs/mobile-ffi-contract.md.
+    [Async, Throws=FfiError]
+    string fetch_client_config_json();
+    [Async, Throws=FfiError]
+    string gift_card_check_json(string code);
+    [Async, Throws=FfiError]
+    string gift_card_redeem_json(string code);
+    [Async, Throws=FfiError]
+    string gift_card_history_json(i64 page);
+    [Async, Throws=FfiError]
+    string fetch_invites_json();
+    [Async, Throws=FfiError]
+    boolean create_invite(string? code);
+    [Async, Throws=FfiError]
+    string fetch_order_json(string trade_no);
+    [Async, Throws=FfiError]
+    string check_coupon_for_period_json(string code, i64 plan_id, string period);
+    [Async, Throws=FfiError]
+    string custom_rules_json();
+    [Async, Throws=FfiError]
+    void save_custom_rules_json(string json);
+    [Async, Throws=FfiError]
+    string apply_custom_rules_yaml(string subscribe_yaml);
+    [Async, Throws=FfiError]
+    string support_request_json(string action, u64? conversation_id, string? content);
 
     /// Cold start: try to repopulate the in-process bearer + return a
     /// LoginSummary. `None` means SecureStore had no entry (= sign in).

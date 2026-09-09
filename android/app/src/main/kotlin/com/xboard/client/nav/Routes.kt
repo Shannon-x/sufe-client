@@ -22,6 +22,10 @@ object Routes {
     const val ORDERS = "orders"
     const val TICKETS = "tickets"
     const val NOTICES = "notices"
+    const val ACCOUNT = "account"
+    const val RULES = "rules"
+    const val FEATURES = "features"
+    const val SUPPORT = "support"
 
     // Detail (single dynamic arg)
     const val TICKET_DETAIL_ARG = "ticketId"

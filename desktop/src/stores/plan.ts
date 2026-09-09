@@ -18,6 +18,8 @@ export const usePlanStore = defineStore("plan", () => {
   const fetchedAt = ref(0);
   const loading = ref(false);
   const error = ref<unknown>(null);
+  let generation = 0;
+  let request = 0;
 
   const byId = computed<Map<number, Plan>>(() => {
     const m = new Map<number, Plan>();
@@ -35,20 +37,25 @@ export const usePlanStore = defineStore("plan", () => {
       return plans.value;
     }
     loading.value = true;
+    const version = generation, current = ++request;
     error.value = null;
     try {
-      plans.value = await api.fetchPlans();
+      const snapshot = await api.fetchPlans();
+      if (version !== generation || current !== request) return plans.value;
+      plans.value = snapshot;
       fetchedAt.value = Date.now();
       return plans.value;
     } catch (e) {
-      error.value = e;
+      if (version === generation && current === request) error.value = e;
       return plans.value;
     } finally {
-      loading.value = false;
+      if (version === generation && current === request) loading.value = false;
     }
   }
 
   function reset() {
+    generation++;
+    loading.value = false;
     plans.value = [];
     fetchedAt.value = 0;
     error.value = null;

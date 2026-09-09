@@ -28,6 +28,8 @@ import com.xboard.client.R
 import com.xboard.client.ui.components.LabeledTextField
 import com.xboard.client.ui.components.PrimaryButton
 import com.xboard.client.ui.components.ScrollableColumn
+import com.xboard.client.ui.components.CaptchaWidget
+import com.xboard.client.ui.components.rememberCaptcha
 import com.xboard.client.vm.AppViewModel
 import com.xboard.client.vm.AuthState
 
@@ -38,6 +40,8 @@ fun LoginScreen(
     onForget: () -> Unit,
 ) {
     val authState by viewModel.authState.collectAsState()
+    val home by viewModel.home.collectAsState()
+    val captcha = rememberCaptcha(home.siteConfig)
     val ctx = LocalContext.current
 
     var email by rememberSaveable { mutableStateOf("") }
@@ -79,7 +83,7 @@ fun LoginScreen(
                 localError = null
             },
             keyboardType = KeyboardType.Email,
-            enabled = !submitting,
+            enabled = !submitting && !captcha.busy,
         )
 
         LabeledTextField(
@@ -90,9 +94,10 @@ fun LoginScreen(
                 localError = null
             },
             isPassword = true,
-            enabled = !submitting,
+            enabled = !submitting && !captcha.busy,
         )
 
+        CaptchaWidget(home.siteConfig, captcha, viewModel::loadSiteConfig)
         if (localError != null) {
             Text(
                 text = localError!!,
@@ -106,13 +111,14 @@ fun LoginScreen(
             text = if (submitting) stringResource(R.string.login_submitting)
                 else stringResource(R.string.login_submit),
             submitting = submitting,
+            enabled = !captcha.busy,
             onClick = {
                 val e = email.trim()
                 if (e.isEmpty() || password.isEmpty()) {
                     localError = ctx.getString(R.string.login_fill_all)
                     return@PrimaryButton
                 }
-                viewModel.login(e, password)
+                captcha.request("login") { token -> viewModel.login(e, password, recaptcha = if (captcha.isTurnstile) null else token, turnstile = if (captcha.isTurnstile) token else null) }
             },
         )
 

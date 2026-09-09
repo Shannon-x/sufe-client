@@ -1,10 +1,10 @@
 export default {
   app: {
-    title: "Xboard",
-    tagline: "High-performance multi-platform proxy client built on mihomo",
+    title: "Sufe",
+    tagline: "Your connection to a world of possibilities.",
   },
   login: {
-    heading: "Sign in to Xboard",
+    heading: "Sign in to Sufe",
     emailLabel: "Email",
     passwordLabel: "Password",
     submit: "Sign in",
@@ -294,7 +294,7 @@ export default {
     downgraded: "TUN unavailable — fell back to system proxy. Check privileges or the helper service to use TUN routing.",
     retry: "Retry",
     viewLogs: "View logs",
-    hiddenToTray: "Xboard is now in the system tray — use the tray icon to bring it back or quit.",
+    hiddenToTray: "Sufe is now in the system tray. Use the tray icon to bring it back or quit.",
     mode: {
       tun: "TUN (recommended)",
       system_proxy: "System proxy",
@@ -341,7 +341,7 @@ export default {
         "On first \"On\", you'll be asked for your admin password to install a small privileged helper used for VPN-style routing. Subsequent connects won't prompt again.",
       helperMissingLinux: "TUN mode unavailable",
       helperMissingBodyLinux:
-        "This install hasn't granted cap_net_admin to mihomo, so TUN mode will fall back to system-proxy. Install the official deb or rpm package — its postinst hook runs setcap automatically. AppImage builds can't take TUN.",
+        "TUN needs system authorization. The deb installer configures kernel capabilities; AppImage requests permission to install a protected kernel. Cancelling stops the connection. You can select system proxy manually in Settings.",
       helperMissingWindows: "First connect will install a system service",
       helperMissingBodyWindows:
         "On first \"On\", a UAC prompt will appear to install the xboard-svc Windows service, which owns the wintun adapter for TUN mode. After approval the service stays installed and won't prompt again.",

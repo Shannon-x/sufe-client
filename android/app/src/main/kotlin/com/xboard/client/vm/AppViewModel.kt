@@ -19,6 +19,7 @@ import com.xboard.client.core.StateObserver
 import com.xboard.client.core.TunnelMode
 import com.xboard.client.vpn.AndroidTunDelegate
 import com.xboard.client.vpn.VpnBinder
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -32,6 +33,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicLong
+import org.json.JSONObject
 
 /**
  * Single ViewModel for the whole app. Compose screens read what they
@@ -59,11 +61,31 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private var manager: ConnectionManager? = null
     private var tunDelegate: AndroidTunDelegate? = null
     private var trafficPollJob: Job? = null
+    private var connectJob: Job? = null
+    @Volatile private var connectionEpoch = 0L
+    private val authEpoch = AtomicLong()
+    private var kernelCleanupJob: Job? = null
+    private var homeRequest = 0L
+    private var noticesRequest = 0L
+    private var plansRequest = 0L
+    private var ordersRequest = 0L
+    private var ticketsRequest = 0L
+    private var ticketRequest = 0L
+    private var proxiesRequest = 0L
+    private var siteRequest = 0L
+    private fun currentSession(version: Long) = version == authEpoch.get() && _authState.value is AuthState.Authenticated
+    val business = BusinessController(
+        clientProvider = { client }, scope = viewModelScope,
+        preferences = application.getSharedPreferences("sufe_ui", android.content.Context.MODE_PRIVATE),
+        notify = { snackbar(it) }, refreshAccount = { refreshHome() }, onExpired = { expireSession() },
+    )
 
     // ----- Auth -------------------------------------------------------------
 
     private val _authState = MutableStateFlow<AuthState>(AuthState.Idle)
     val authState: StateFlow<AuthState> = _authState.asStateFlow()
+    private val _emailCodeSending = MutableStateFlow(false)
+    val emailCodeSending = _emailCodeSending.asStateFlow()
 
     // ----- Home / dashboard --------------------------------------------------
 
@@ -101,33 +123,52 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile
     private var autoConnectAfterAuth = false
 
+    init {
+        viewModelScope.launch {
+            authState.collect { auth ->
+                if (auth is AuthState.Authenticated) business.startSession(auth.summary.email)
+                else business.stopSession()
+            }
+        }
+    }
+
     /** Hydrate persisted session on cold start. Call from MainActivity. */
     fun bootstrap() {
         if (_authState.value !is AuthState.Idle) return
+        val version = authEpoch.incrementAndGet()
         _authState.value = AuthState.Hydrating
         viewModelScope.launch {
-            runCatching { client.hydrateSession() }
-                .onSuccess { summary ->
-                    if (summary != null) {
-                        _authState.value = AuthState.Authenticated(summary)
-                        refreshHome()
-                    } else {
-                        _authState.value = AuthState.Anonymous
-                    }
-                }
-                .onFailure {
+            try {
+                val summary = client.hydrateSession()
+                if (version != authEpoch.get()) return@launch
+                if (summary == null) { _authState.value = AuthState.Anonymous; return@launch }
+                // An explicit rejection expires the session. A temporary
+                // network failure does not invalidate a persisted bearer.
+                val valid = try { client.checkLogin() }
+                    catch (error: CancellationException) { throw error }
+                    catch (error: FfiException.Unauthorized) { false }
+                    catch (_: Exception) { null }
+                if (version != authEpoch.get()) return@launch
+                if (valid == false) { expireSession(); return@launch }
+                _authState.value = AuthState.Authenticated(summary)
+                refreshHome()
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                if (version == authEpoch.get()) {
                     _authState.value = AuthState.Anonymous
-                    snackbar(it.userMessage())
+                    snackbar(error.userMessage())
                 }
+            }
         }
         loadSiteConfig()
     }
 
-    private fun loadSiteConfig() {
+    fun loadSiteConfig() {
+        val request = ++siteRequest
         viewModelScope.launch {
             runCatching { client.fetchSiteConfig() }
-                .onSuccess { sc -> _home.update { it.copy(siteConfig = sc) } }
-                .onFailure { /* swallow on cold start; UI gracefully falls back */ }
+                .onSuccess { sc -> if (request == siteRequest) _home.update { it.copy(siteConfig = sc) } }
+                .onFailure { if (it is CancellationException) throw it }
         }
     }
 
@@ -135,15 +176,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun login(email: String, password: String, recaptcha: String? = null, turnstile: String? = null) {
         if (_authState.value is AuthState.Submitting) return
+        val version = authEpoch.incrementAndGet()
         _authState.value = AuthState.Submitting
+        val cleanup = kernelCleanupJob
         viewModelScope.launch {
+            cleanup?.join()
+            if (version != authEpoch.get()) return@launch
             runCatching {
                 client.login(LoginArgs(email.trim(), password, recaptcha, turnstile))
             }.onSuccess {
+                if (version != authEpoch.get()) return@onSuccess
                 _authState.value = AuthState.Authenticated(it)
                 autoConnectAfterAuth = true
                 refreshHome()
             }.onFailure {
+                if (it is CancellationException) throw it
+                if (version != authEpoch.get()) return@onFailure
                 _authState.value = AuthState.Anonymous
                 snackbar(it.userMessage())
             }
@@ -152,15 +200,22 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun register(args: RegisterArgs) {
         if (_authState.value is AuthState.Submitting) return
+        val version = authEpoch.incrementAndGet()
         _authState.value = AuthState.Submitting
+        val cleanup = kernelCleanupJob
         viewModelScope.launch {
+            cleanup?.join()
+            if (version != authEpoch.get()) return@launch
             runCatching { client.register(args) }
                 .onSuccess {
+                    if (version != authEpoch.get()) return@onSuccess
                     _authState.value = AuthState.Authenticated(it)
                     autoConnectAfterAuth = true
                     refreshHome()
                 }
                 .onFailure {
+                    if (it is CancellationException) throw it
+                    if (version != authEpoch.get()) return@onFailure
                     _authState.value = AuthState.Anonymous
                     snackbar(it.userMessage())
                 }
@@ -169,38 +224,73 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun forgetPassword(args: ForgetPasswordArgs, onDone: () -> Unit) {
         if (_authState.value is AuthState.Submitting) return
+        val version = authEpoch.incrementAndGet()
         _authState.value = AuthState.Submitting
+        val cleanup = kernelCleanupJob
         viewModelScope.launch {
+            cleanup?.join()
+            if (version != authEpoch.get()) return@launch
             runCatching { client.forgetPassword(args) }
                 .onSuccess {
+                    if (version != authEpoch.get()) return@onSuccess
                     _authState.value = AuthState.Anonymous
                     onDone()
                 }
                 .onFailure {
+                    if (it is CancellationException) throw it
+                    if (version != authEpoch.get()) return@onFailure
                     _authState.value = AuthState.Anonymous
                     snackbar(it.userMessage())
                 }
         }
     }
 
-    fun sendEmailCode(email: String, onDone: () -> Unit) {
+    fun sendEmailCode(email: String, captchaToken: String? = null, onDone: () -> Unit) {
+        if (_emailCodeSending.value) return
+        val version = authEpoch.get()
+        _emailCodeSending.value = true
         viewModelScope.launch {
-            runCatching { client.sendEmailVerify(email.trim(), null) }
-                .onSuccess { onDone() }
-                .onFailure { snackbar(it.userMessage()) }
+            try {
+                client.sendEmailVerify(email.trim(), captchaToken)
+                if (version == authEpoch.get()) onDone()
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                if (version == authEpoch.get()) snackbar(error.userMessage())
+            } finally { _emailCodeSending.value = false }
         }
     }
 
-    fun logout() {
-        viewModelScope.launch {
-            disconnect()
+    fun logout() { clearSession() }
+
+    private fun expireSession() {
+        if (_authState.value is AuthState.Anonymous) return
+        clearSession()
+        snackbar("登录已过期，请重新登录")
+    }
+
+    private fun clearSession() {
+        authEpoch.incrementAndGet()
+        connectionEpoch++
+        autoConnectAfterAuth = false
+        stopTrafficPolling()
+        business.stopSession()
+        _authState.value = AuthState.Anonymous
+        _home.value = HomeState(siteConfig = _home.value.siteConfig)
+        _plans.value = PlansState()
+        _orders.value = OrdersState()
+        _tickets.value = TicketsState()
+        _ticketDetail.value = TicketDetailState()
+        _connection.value = ConnectionUiState(mode = _connection.value.mode)
+        val outstandingConnect = connectJob
+        val previousCleanup = kernelCleanupJob
+        // New login/connect waits for this barrier. The old connect may be
+        // fetching its subscription before entering the native kernel lock.
+        kernelCleanupJob = viewModelScope.launch {
+            previousCleanup?.join()
             client.logout()
-            _authState.value = AuthState.Anonymous
-            _home.value = HomeState()
-            _plans.value = PlansState()
-            _orders.value = OrdersState()
-            _tickets.value = TicketsState()
-            _ticketDetail.value = TicketDetailState()
+            outstandingConnect?.join()
+            runCatching { manager?.disconnect() }
+                .onFailure { if (it is CancellationException) throw it; snackbar("连接清理未完成，请重试断开连接") }
         }
     }
 
@@ -208,16 +298,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshHome() {
         if (_authState.value !is AuthState.Authenticated) return
+        val version = authEpoch.get(); val request = ++homeRequest; val noticeVersion = noticesRequest
         _home.update { it.copy(refreshing = true) }
         viewModelScope.launch {
+            if (!currentSession(version) || request != homeRequest) return@launch
             val user = runCatchingFfi { client.currentUser() }
+            if (!currentSession(version) || request != homeRequest) return@launch
             val sub = runCatchingFfi { client.currentSubscribe() }
-            val notices = runCatchingFfi { client.fetchNotices() }
+            if (!currentSession(version) || request != homeRequest) return@launch
+            val notices = if (business.state.value.enabled("notice")) runCatchingFfi { client.fetchNotices() } else emptyList()
+            if (!currentSession(version) || request != homeRequest) return@launch
             _home.update {
                 it.copy(
                     user = user ?: it.user,
                     subscribe = sub ?: it.subscribe,
-                    notices = notices ?: it.notices,
+                    notices = if (noticeVersion == noticesRequest) notices ?: it.notices else it.notices,
                     refreshing = false,
                 )
             }
@@ -225,9 +320,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshNotices() {
+        if (!business.state.value.enabled("notice") || _authState.value !is AuthState.Authenticated) return
+        val version = authEpoch.get(); val request = ++noticesRequest
         viewModelScope.launch {
+            if (!currentSession(version) || request != noticesRequest) return@launch
             _home.update { it.copy(refreshing = true) }
             val n = runCatchingFfi { client.fetchNotices() }
+            if (!currentSession(version) || request != noticesRequest || !business.state.value.enabled("notice")) return@launch
             _home.update { it.copy(notices = n ?: it.notices, refreshing = false) }
         }
     }
@@ -235,10 +334,15 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // ----- Plans actions ----------------------------------------------------
 
     fun refreshPlans() {
+        if (_authState.value !is AuthState.Authenticated) return
+        val version = authEpoch.get(); val request = ++plansRequest
         _plans.update { it.copy(refreshing = true) }
         viewModelScope.launch {
+            if (!currentSession(version) || request != plansRequest) return@launch
             val list = runCatchingFfi { client.fetchPlans() }
+            if (!currentSession(version) || request != plansRequest) return@launch
             val pms = runCatchingFfi { client.fetchPaymentMethods() }
+            if (!currentSession(version) || request != plansRequest) return@launch
             _plans.update {
                 it.copy(
                     plans = list ?: it.plans,
@@ -249,25 +353,35 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    suspend fun saveOrder(args: SaveOrderArgs): String? = runCatchingFfi { client.saveOrder(args) }
+    suspend fun saveOrder(args: SaveOrderArgs): String? {
+        if (!business.state.value.enabled("purchase")) { snackbar("订阅购买暂未开放"); return null }
+        return runCatchingFfi { client.saveOrder(args) }
+    }
 
     suspend fun checkoutOrder(tradeNo: String, methodId: Long): CheckoutResponse? =
         runCatchingFfi { client.checkoutOrder(tradeNo, methodId) }
 
+    suspend fun orderDetails(tradeNo: String): JSONObject? = runCatchingFfi { JSONObject(client.fetchOrderJson(tradeNo)) }
+    suspend fun paymentMethods() = runCatchingFfi { client.fetchPaymentMethods() }
+    suspend fun checkCoupon(code: String, planId: Long, period: String): JSONObject? {
+        if (!business.state.value.enabled("purchase")) return null
+        return runCatchingFfi { JSONObject(client.checkCouponForPeriodJson(code, planId, period)) }
+    }
+
     suspend fun checkOrder(tradeNo: String): Int? = runCatchingFfi { client.checkOrder(tradeNo) }
 
-    suspend fun cancelOrder(tradeNo: String): Boolean {
-        return runCatching { client.cancelOrder(tradeNo) }
-            .onFailure { snackbar(it.userMessage()) }
-            .isSuccess
-    }
+    suspend fun cancelOrder(tradeNo: String): Boolean = runCatchingFfi { client.cancelOrder(tradeNo); true } ?: false
 
     // ----- Orders actions ---------------------------------------------------
 
     fun refreshOrders() {
+        if (_authState.value !is AuthState.Authenticated) return
+        val version = authEpoch.get(); val request = ++ordersRequest
         _orders.update { it.copy(refreshing = true) }
         viewModelScope.launch {
+            if (!currentSession(version) || request != ordersRequest) return@launch
             val list = runCatchingFfi { client.fetchOrders() }
+            if (!currentSession(version) || request != ordersRequest) return@launch
             _orders.update { it.copy(orders = list ?: it.orders, refreshing = false) }
         }
     }
@@ -275,52 +389,63 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     // ----- Tickets actions --------------------------------------------------
 
     fun refreshTickets() {
+        if (!business.state.value.enabled("tickets") || _authState.value !is AuthState.Authenticated) return
+        val version = authEpoch.get(); val request = ++ticketsRequest
         _tickets.update { it.copy(refreshing = true) }
         viewModelScope.launch {
+            if (!currentSession(version) || request != ticketsRequest) return@launch
             val list = runCatchingFfi { client.fetchTickets() }
+            if (!currentSession(version) || request != ticketsRequest || !business.state.value.enabled("tickets")) return@launch
             _tickets.update { it.copy(tickets = list ?: it.tickets, refreshing = false) }
         }
     }
 
     fun openTicket(id: Long) {
+        if (!business.state.value.enabled("tickets") || _authState.value !is AuthState.Authenticated) return
+        val version = authEpoch.get(); val request = ++ticketRequest
         _ticketDetail.update { it.copy(refreshing = true) }
         viewModelScope.launch {
+            if (!currentSession(version) || request != ticketRequest) return@launch
             val detail = runCatchingFfi { client.fetchTicket(id) }
+            if (!currentSession(version) || request != ticketRequest || !business.state.value.enabled("tickets")) return@launch
             _ticketDetail.update { it.copy(detail = detail, refreshing = false) }
         }
     }
 
     fun replyTicket(id: Long, message: String, onDone: () -> Unit) {
+        if (!business.state.value.enabled("tickets")) return
+        val version = authEpoch.get()
         viewModelScope.launch {
-            runCatching { client.replyTicket(id, message) }
-                .onSuccess {
-                    openTicket(id)
-                    onDone()
-                }
-                .onFailure { snackbar(it.userMessage()) }
+            if (!currentSession(version)) return@launch
+            val completed = runCatchingFfi { client.replyTicket(id, message); true } == true
+            if (!completed || !currentSession(version)) return@launch
+            openTicket(id)
+            onDone()
         }
     }
 
     fun closeTicket(id: Long, onDone: () -> Unit) {
+        if (!business.state.value.enabled("tickets")) return
+        val version = authEpoch.get()
         viewModelScope.launch {
-            runCatching { client.closeTicket(id) }
-                .onSuccess {
-                    openTicket(id)
-                    refreshTickets()
-                    onDone()
-                }
-                .onFailure { snackbar(it.userMessage()) }
+            if (!currentSession(version)) return@launch
+            val completed = runCatchingFfi { client.closeTicket(id); true } == true
+            if (!completed || !currentSession(version)) return@launch
+            openTicket(id)
+            refreshTickets()
+            onDone()
         }
     }
 
     fun saveTicket(args: SaveTicketArgs, onDone: () -> Unit) {
+        if (!business.state.value.enabled("tickets")) return
+        val version = authEpoch.get()
         viewModelScope.launch {
-            runCatching { client.saveTicket(args) }
-                .onSuccess {
-                    refreshTickets()
-                    onDone()
-                }
-                .onFailure { snackbar(it.userMessage()) }
+            if (!currentSession(version)) return@launch
+            val completed = runCatchingFfi { client.saveTicket(args); true } == true
+            if (!completed || !currentSession(version)) return@launch
+            refreshTickets()
+            onDone()
         }
     }
 
@@ -333,7 +458,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      * onto the snackbar / `connection.errorMessage`.
      */
     fun connect(binder: VpnBinder, announceAuto: Boolean = false) {
-        viewModelScope.launch {
+        if (_authState.value !is AuthState.Authenticated) return
+        if (_home.value.user?.banned == true) { snackbar("账户已暂停使用，请联系客服"); return }
+        val subscription = _home.value.subscribe
+        if (subscription != null && (subscription.planId == null || subscription.transferEnable <= subscription.upload + subscription.download || (subscription.expiredAt != null && subscription.expiredAt!! <= System.currentTimeMillis() / 1000))) {
+            snackbar("订阅已到期或流量已用完，请先管理订阅")
+            return
+        }
+        if (connectJob?.isActive == true || _connection.value.state is ConnectionState.Connected) return
+        val epoch = connectionEpoch
+        val cleanup = kernelCleanupJob
+        connectJob = viewModelScope.launch {
+            cleanup?.join()
+            if (epoch != connectionEpoch || _authState.value !is AuthState.Authenticated) return@launch
             if (announceAuto) {
                 snackbar(getApplication<Application>().getString(
                     com.xboard.client.R.string.connect_auto_connecting,
@@ -341,6 +478,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
             }
             _connection.update { it.copy(errorMessage = null) }
             val delegate: AndroidTunDelegate? = binder.prepareAndBind()
+            if (epoch != connectionEpoch || _authState.value !is AuthState.Authenticated) return@launch
             if (delegate == null) {
                 val msg = getApplication<Application>().getString(
                     com.xboard.client.R.string.connect_vpn_permission_denied,
@@ -349,9 +487,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                 snackbar(msg)
                 return@launch
             }
-            ensureManager(delegate)
-            runCatching { manager!!.connect() }
+            runCatching {
+                ensureManager(delegate)
+                manager!!.connect()
+            }
                 .onSuccess {
+                    if (epoch != connectionEpoch || _authState.value !is AuthState.Authenticated) return@onSuccess
                     if (announceAuto) {
                         snackbar(getApplication<Application>().getString(
                             com.xboard.client.R.string.connect_auto_connected,
@@ -359,25 +500,37 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 .onFailure {
+                    if (it is CancellationException) throw it
+                    if (epoch != connectionEpoch || _authState.value !is AuthState.Authenticated) return@onFailure
+                    if (it is FfiException.Unauthorized) { expireSession(); return@onFailure }
                     val msg = it.userMessage()
                     _connection.update { it.copy(errorMessage = msg) }
                     snackbar(msg)
                 }
-            refreshProxies()
-            startTrafficPolling()
+            if (epoch != connectionEpoch || _authState.value !is AuthState.Authenticated) return@launch
+            if (_connection.value.state is ConnectionState.Connected) {
+                refreshProxies()
+                startTrafficPolling()
+            }
         }
     }
 
     fun disconnect() {
+        connectionEpoch++
+        stopTrafficPolling()
         val mgr = manager ?: return
-        viewModelScope.launch {
-            stopTrafficPolling()
+        val outstandingConnect = connectJob
+        val previousCleanup = kernelCleanupJob
+        kernelCleanupJob = viewModelScope.launch {
+            previousCleanup?.join()
+            outstandingConnect?.join()
             runCatching { mgr.disconnect() }
-                .onFailure { snackbar(it.userMessage()) }
+                .onFailure { if (it is CancellationException) throw it; snackbar(it.userMessage()) }
         }
     }
 
     fun setMode(mode: TunnelMode) {
+        if (_authState.value !is AuthState.Authenticated) return
         val mgr = manager ?: return
         runCatching { mgr.setTunnelMode(mode) }
             .onSuccess {
@@ -387,10 +540,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectProxy(group: String, node: String) {
+        if (_authState.value !is AuthState.Authenticated) return
+        val version = authEpoch.get(); val connectionVersion = connectionEpoch
         val mgr = manager ?: return
         viewModelScope.launch {
+            if (!currentSession(version)) return@launch
             runCatching { mgr.selectProxy(group, node) }
-                .onSuccess { refreshProxies() }
+                .onSuccess { if (currentSession(version) && connectionVersion == connectionEpoch) refreshProxies() }
                 .onFailure { snackbar(it.userMessage()) }
         }
     }
@@ -400,9 +556,13 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun refreshProxies() {
+        if (_authState.value !is AuthState.Authenticated || _connection.value.state !is ConnectionState.Connected) return
+        val version = authEpoch.get(); val connectionVersion = connectionEpoch; val request = ++proxiesRequest
         val mgr = manager ?: return
         viewModelScope.launch {
+            if (!currentSession(version) || request != proxiesRequest) return@launch
             val list = runCatchingFfi { mgr.proxies() } ?: return@launch
+            if (!currentSession(version) || connectionVersion != connectionEpoch || request != proxiesRequest || _connection.value.state !is ConnectionState.Connected) return@launch
             val primary = list.firstOrNull()
             val selected = primary?.now ?: list.firstOrNull { it.now != null }?.now
             val effective = selected?.let { resolveProxyLeaf(it, list) }
@@ -430,15 +590,25 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun ensureManager(delegate: AndroidTunDelegate) {
-        if (manager != null) return
+        if (manager != null) {
+            container.connectionManager(delegate)
+            tunDelegate = delegate
+            return
+        }
         tunDelegate = delegate
         val mgr = container.connectionManager(delegate)
         manager = mgr
         mgr.subscribeState(object : StateObserver {
             override fun onState(state: ConnectionState) {
-                _connection.update { it.copy(state = state) }
-                if (state is ConnectionState.Connected) {
-                    delegate.reportNode(_connection.value.selectedNode)
+                val version = authEpoch.get()
+                viewModelScope.launch(Dispatchers.Main.immediate) {
+                    if (!currentSession(version)) return@launch
+                    _connection.update { if (state is ConnectionState.Connected) it.copy(state = state) else it.copy(state = state, traffic = null, proxies = emptyList(), selectedNode = null, selectedRoute = null) }
+                    if (state is ConnectionState.Connected) {
+                        delegate.reportNode(_connection.value.selectedNode)
+                        refreshProxies()
+                        startTrafficPolling()
+                    } else stopTrafficPolling()
                 }
             }
         })
@@ -447,10 +617,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun startTrafficPolling() {
         if (trafficPollJob?.isActive == true) return
+        val version = authEpoch.get(); val connectionVersion = connectionEpoch
         trafficPollJob = viewModelScope.launch {
-            while (true) {
+            while (currentSession(version) && connectionVersion == connectionEpoch && _connection.value.state is ConnectionState.Connected) {
                 val mgr = manager ?: break
                 val t = runCatchingFfi { mgr.currentTraffic() } ?: break
+                if (!currentSession(version) || connectionVersion != connectionEpoch || _connection.value.state !is ConnectionState.Connected) break
                 _connection.update { it.copy(traffic = t) }
                 delay(1_000)
             }
@@ -471,12 +643,26 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
      * field" — the field becomes `null` (= skeleton) on failure rather
      * than torpedoing the whole screen.
      */
-    private suspend inline fun <T> runCatchingFfi(crossinline block: suspend () -> T): T? =
-        withContext(Dispatchers.Default) {
-            runCatching { block() }
-                .onFailure { snackbar(it.userMessage()) }
-                .getOrNull()
+    private suspend inline fun <T> runCatchingFfi(crossinline block: suspend () -> T): T? {
+        val version = authEpoch.get()
+        if (!currentSession(version)) return null
+        return withContext(Dispatchers.Default) {
+            if (!currentSession(version)) return@withContext null
+            try {
+                val result = block()
+                if (version == authEpoch.get()) result else null
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                withContext(Dispatchers.Main.immediate) {
+                    if (version == authEpoch.get()) {
+                        if (error is FfiException.Unauthorized) expireSession()
+                        else snackbar(error.userMessage())
+                    }
+                }
+                null
+            }
         }
+    }
 
     private fun snackbar(message: String) {
         val id = eventCounter.incrementAndGet()
@@ -507,7 +693,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     override fun onCleared() {
         super.onCleared()
         runCatching { manager?.unsubscribeState() }
-        runCatching { manager?.close() }
+        // AppContainer + the foreground service own the VPN across Activity
+        // recreation. Closing the UniFFI handle here invalidated that cache.
         manager = null
     }
 }

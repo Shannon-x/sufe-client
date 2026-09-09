@@ -25,9 +25,9 @@ struct HomeView: View {
         ZStack {
             LinearGradient(
                 colors: [
-                    Color(red: 0.14, green: 0.10, blue: 0.20),
+                    ProtonStyle.accent.opacity(0.08),
                     ProtonStyle.background,
-                    Color(red: 0.05, green: 0.08, blue: 0.12)
+                    ProtonStyle.background
                 ],
                 startPoint: .top,
                 endPoint: .bottom
@@ -45,14 +45,15 @@ struct HomeView: View {
                     if let info = model.subscribe {
                         ProtonSubscribeCard(info: info, location: selectedLocation)
                     } else if model.homeRefreshing {
-                        ProgressView().tint(.white)
+                        ProgressView().tint(ProtonStyle.accent)
                     }
 
-                    Spacer(minLength: 210)
+                    Spacer(minLength: 36)
 
                     selectedServerCard
                     actionRow
                 }
+                .frame(maxWidth: 680)
                 .padding(.horizontal, 18)
                 .padding(.top, 20)
                 .padding(.bottom, 30)
@@ -72,7 +73,7 @@ struct HomeView: View {
         }
         .toolbarBackground(ProtonStyle.panel, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
-        .toolbarColorScheme(.dark, for: .navigationBar)
+        .toolbarColorScheme(.light, for: .navigationBar)
         .refreshable {
             await model.refreshHome()
             await model.refreshProxies()
@@ -91,11 +92,11 @@ struct HomeView: View {
                 .padding(14)
                 .background((isConnected ? ProtonStyle.green : ProtonStyle.danger).opacity(0.16), in: RoundedRectangle(cornerRadius: 16))
 
-            Text(isConnected ? "已保护" : "未保护")
+            Text(isConnected ? "连接已就绪" : "随时开启，自在连接")
                 .font(.title2.weight(.heavy))
                 .foregroundStyle(isConnected ? ProtonStyle.green : ProtonStyle.danger)
 
-            Text(isConnected ? (model.selectedNode ?? String(localized: "connect.node.current")) : "连接以保护您的隐私")
+            Text(isConnected ? (model.selectedNode ?? String(localized: "connect.node.current")) : "一键连接全球，让每次出发更轻松")
                 .font(.callout)
                 .foregroundStyle(ProtonStyle.textMuted)
                 .lineLimit(1)
@@ -116,7 +117,7 @@ struct HomeView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(model.selectedNode ?? "最快服务器")
                             .font(.headline.weight(.heavy))
-                            .foregroundStyle(.white)
+                            .foregroundStyle(ProtonStyle.text)
                             .lineLimit(1)
                         Text(model.selectedRoute ?? selectedLocation.map { "\($0.flag) \($0.country) · \($0.label)" } ?? "自动选择最优节点")
                             .font(.caption)
@@ -142,7 +143,7 @@ struct HomeView: View {
                 .foregroundStyle(.white)
                 .background(
                     LinearGradient(
-                        colors: [ProtonStyle.accent, ProtonStyle.green.opacity(0.86)],
+                        colors: [ProtonStyle.accent, ProtonStyle.accent.opacity(0.76)],
                         startPoint: .leading,
                         endPoint: .trailing
                     ),
@@ -172,10 +173,10 @@ struct HomeView: View {
             } label: {
                 ActionTile(title: String(localized: "home.menu.orders"), systemImage: "cart")
             }
-            NavigationLink {
-                NoticesView(model: model)
-            } label: {
-                ActionTile(title: String(localized: "home.menu.notices"), systemImage: "bell")
+            if model.clientFeatures.enabled("notice") {
+                NavigationLink { NoticesView(model: model) } label: {
+                    ActionTile(title: String(localized: "home.menu.notices"), systemImage: "bell")
+                }
             }
         }
         .buttonStyle(.plain)
@@ -203,7 +204,7 @@ private struct ProtonSubscribeCard: View {
             HStack {
                 Label("流量使用", systemImage: "waveform.path.ecg")
                     .font(.headline.weight(.bold))
-                    .foregroundStyle(.white)
+                    .foregroundStyle(ProtonStyle.text)
                 Spacer()
                 if let exp = info.expiredAt {
                     Text(formatDateTime(exp))
@@ -214,13 +215,13 @@ private struct ProtonSubscribeCard: View {
 
             ProgressView(value: Double(used), total: Double(total))
                 .tint(ProtonStyle.accent)
-                .background(Color.white.opacity(0.10), in: Capsule())
+                .background(ProtonStyle.panelBorder, in: Capsule())
 
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(formatBytes(info.transferEnable - min(info.transferEnable, used)))
                         .font(.title3.weight(.heavy))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(ProtonStyle.text)
                     Text("剩余流量")
                         .font(.caption)
                         .foregroundStyle(ProtonStyle.textMuted)
@@ -229,7 +230,7 @@ private struct ProtonSubscribeCard: View {
                 VStack(alignment: .trailing, spacing: 3) {
                     Text(formatBytes(used))
                         .font(.title3.weight(.heavy))
-                        .foregroundStyle(.white)
+                        .foregroundStyle(ProtonStyle.text)
                     Text("本次套餐")
                         .font(.caption)
                         .foregroundStyle(ProtonStyle.textMuted)
@@ -260,7 +261,7 @@ private struct WorldMapCanvas: View {
             let w = size.width
             let h = size.height
             let land = Color.black.opacity(0.32)
-            let stroke = Color.white.opacity(0.18)
+            let stroke = ProtonStyle.accent.opacity(0.12)
 
             func polygon(_ points: [(CGFloat, CGFloat)]) -> Path {
                 var path = Path()
@@ -278,7 +279,7 @@ private struct WorldMapCanvas: View {
                 var vertical = Path()
                 vertical.move(to: CGPoint(x: w * line, y: 0))
                 vertical.addLine(to: CGPoint(x: w * line, y: h))
-                context.stroke(vertical, with: .color(Color.white.opacity(0.035)), lineWidth: 1)
+                context.stroke(vertical, with: .color(ProtonStyle.accent.opacity(0.035)), lineWidth: 1)
             }
 
             let eurasia = polygon([(0.45, 0.18), (0.58, 0.12), (0.72, 0.20), (0.88, 0.28), (0.82, 0.48), (0.67, 0.52), (0.56, 0.62), (0.42, 0.56), (0.32, 0.42)])
@@ -318,9 +319,9 @@ private struct ActionTile: View {
             Image(systemName: systemImage)
             Text(title).font(.caption.weight(.bold))
         }
-        .foregroundStyle(.white)
+        .foregroundStyle(ProtonStyle.text)
         .frame(maxWidth: .infinity, minHeight: 58)
-        .background(Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 14))
+        .background(ProtonStyle.panel, in: RoundedRectangle(cornerRadius: 14))
         .overlay(
             RoundedRectangle(cornerRadius: 14)
                 .stroke(ProtonStyle.panelBorder)

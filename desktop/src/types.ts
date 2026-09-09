@@ -10,6 +10,8 @@ export interface LoginSummary {
 
 export interface UserInfo {
   email: string;
+  banned?: boolean;
+  transfer_enable?: number | null;
   balance: number;
   commission_balance: number;
   plan_id: number | null;
@@ -51,11 +53,7 @@ export function isCommandError(e: unknown): e is CommandError {
 // other value as "captcha required but provider unsupported" and refuse
 // to silently skip — see `CaptchaWidget.vue`.
 export type CaptchaType =
-  | ""
-  | "recaptcha"
-  | "recaptcha-v3"
-  | "turnstile"
-  | (string & {});
+  "" | "recaptcha" | "recaptcha-v3" | "turnstile" | (string & {});
 
 export interface SiteConfig {
   tos_url: string;
@@ -180,6 +178,7 @@ export interface NodeGeo {
 // The Vue layer reads `helper_present === false` as "no privileged path
 // available" and picks a platform-appropriate hint body accordingly.
 export interface KernelHealth {
+  tun_supported?: boolean;
   mihomo_present: boolean;
   mihomo_path: string;
   helper_present: boolean | null;

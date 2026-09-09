@@ -39,4 +39,9 @@ class AndroidTunDelegate(binder: XboardVpnService.LocalBinder) : TunDelegate {
     fun detach() {
         binderRef.set(null)
     }
+
+    /** Keep the Rust callback identity stable across Activity/service rebinding. */
+    fun rebindFrom(delegate: AndroidTunDelegate) {
+        binderRef.set(delegate.binderRef.get())
+    }
 }

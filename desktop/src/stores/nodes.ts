@@ -31,6 +31,7 @@ export const useNodesStore = defineStore("nodes", () => {
   const loading = ref(false);
   const lastError = ref<string | null>(null);
   const fetchedAt = ref<number | null>(null);
+  let generation = 0;
 
   const sidebarNodes = computed<SidebarNode[]>(() =>
     raw.value.map((n) => ({
@@ -79,14 +80,17 @@ export const useNodesStore = defineStore("nodes", () => {
   async function refresh(): Promise<void> {
     if (loading.value) return;
     loading.value = true;
+    const version = generation;
     lastError.value = null;
     try {
-      raw.value = await api.previewSubscribeNodes();
+      const snapshot = await api.previewSubscribeNodes();
+      if (version !== generation) return;
+      raw.value = snapshot;
       fetchedAt.value = Date.now();
     } catch (err) {
-      lastError.value = err instanceof Error ? err.message : String(err);
+      if (version === generation) lastError.value = err instanceof Error ? err.message : String(err);
     } finally {
-      loading.value = false;
+      if (version === generation) loading.value = false;
     }
   }
 
@@ -97,6 +101,8 @@ export const useNodesStore = defineStore("nodes", () => {
   }
 
   function reset() {
+    generation++;
+    loading.value = false;
     raw.value = [];
     fetchedAt.value = null;
     lastError.value = null;

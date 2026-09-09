@@ -1,10 +1,10 @@
 export default {
   app: {
-    title: "Xboard",
-    tagline: "基于 mihomo 的高性能多平台代理客户端",
+    title: "Sufe",
+    tagline: "专属服务，一键连接世界。",
   },
   login: {
-    heading: "登录到 Xboard",
+    heading: "登录到 Sufe",
     emailLabel: "邮箱",
     passwordLabel: "密码",
     submit: "登 录",
@@ -294,7 +294,7 @@ export default {
     downgraded: "TUN 模式不可用，已自动切换到系统代理。如需 TUN 路由请检查权限或后台服务。",
     retry: "重试",
     viewLogs: "查看日志",
-    hiddenToTray: "Xboard 已最小化到系统托盘，需要时可从托盘图标恢复或退出。",
+    hiddenToTray: "Sufe 已最小化到系统托盘，需要时可从托盘图标恢复或退出。",
     mode: {
       tun: "TUN（推荐）",
       system_proxy: "系统代理",
@@ -340,7 +340,7 @@ export default {
         "首次点击「开启」时会请求管理员密码，安装一个用于 VPN 路由的轻量后台服务。后续连接将不再弹出。",
       helperMissingLinux: "TUN 模式不可用",
       helperMissingBodyLinux:
-        "当前安装未授予 mihomo cap_net_admin 权限，TUN 模式将自动回退为系统代理。请安装官方 deb 或 rpm 包，安装脚本会自动完成 setcap；AppImage 包暂不支持 TUN。",
+        "TUN 首次连接需要系统授权。deb 安装包会配置内核权限；AppImage 会请求安装受保护的内核。取消授权将停止连接，也可在设置中手动选择系统代理。",
       helperMissingWindows: "首次连接需安装系统服务",
       helperMissingBodyWindows:
         "首次点击「开启」时会弹出 UAC 授权框，安装名为 xboard-svc 的 Windows 服务用于创建 wintun 适配器。授权后服务长期运行，不再重复弹窗。",

@@ -1,318 +1,614 @@
 <script setup lang="ts">
-import { computed, h, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
-import {
-  NButton,
-  NDataTable,
-  NEmpty,
-  NLayout,
-  NLayoutContent,
-  NLayoutHeader,
-  NPopconfirm,
-  NSkeleton,
-  NSpace,
-  NTag,
-  NText,
-  useMessage,
-} from "naive-ui";
-import type { DataTableColumns } from "naive-ui";
+import { NButton, NEmpty, NPopconfirm, NSkeleton, useMessage } from "naive-ui";
 import { api } from "@/api";
 import type { Order } from "@/types";
 import { formatError } from "@/utils/error";
+import { money, periodNames } from "@/utils/billing";
 import PurchaseModal from "@/components/PurchaseModal.vue";
+import AppIcon from "@/components/AppIcon.vue";
 import { useAuthStore } from "@/stores/auth";
-
 const { t } = useI18n();
 const router = useRouter();
-const message = useMessage();
+const toast = useMessage();
 const auth = useAuthStore();
-
 const orders = ref<Order[]>([]);
 const loading = ref(true);
-const cancellingId = ref<number | null>(null);
-
-// Resume-payment modal state. We pass `existingTradeNo` so PurchaseModal
-// skips /order/save and goes straight to method-pick + /order/checkout.
+const error = ref("");
+const cancelling = ref<number | null>(null);
+const filter = ref("all");
 const showPurchase = ref(false);
-const resumeTradeNo = ref<string | null>(null);
-const resumeDisplayName = ref<string | null>(null);
-const resumePeriodLabel = ref<string | null>(null);
-const resumePriceCents = ref<number | null>(null);
-
+const selected = ref<Order | null>(null);
+const planNames = ref<Record<number, string>>({});
+const statuses: Record<number, string> = {
+  0: "待付款",
+  1: "正在开通",
+  2: "已取消",
+  3: "已完成",
+  4: "已折抵",
+};
+const pending = computed(() => orders.value.filter((o) => o.status === 0));
+const completed = computed(() =>
+  orders.value.filter((o) => o.status === 3 || o.status === 4),
+);
+const shown = computed(() =>
+  filter.value === "all"
+    ? orders.value
+    : filter.value === "pending"
+      ? pending.value
+      : completed.value,
+);
+let fetching = false;
+let active = true;
+let refreshTimer: ReturnType<typeof setTimeout> | undefined;
 async function load() {
+  if (fetching) return;
+  fetching = true;
   loading.value = true;
+  error.value = "";
+  if (refreshTimer) clearTimeout(refreshTimer);
   try {
-    orders.value = await api.fetchOrders();
+    const result = await api.fetchOrders();
+    if (active) orders.value = result;
   } catch (e) {
-    message.error(formatError(e, t));
+    if (active) error.value = formatError(e, t);
   } finally {
+    fetching = false;
     loading.value = false;
+    if (active && orders.value.some((o) => o.status === 1))
+      refreshTimer = setTimeout(() => void load(), 15000);
   }
 }
-
-onMounted(load);
-
-// Re-fetch whenever the window regains focus. Payment happens in an external
-// browser tab, so when the user tabs back into the app the order row should
-// reflect its new status without requiring a manual refresh click.
-onMounted(() => {
-  window.addEventListener("focus", load);
-});
-onBeforeUnmount(() => {
-  window.removeEventListener("focus", load);
-});
-
-function openResume(order: Order) {
-  resumeTradeNo.value = order.trade_no;
-  resumeDisplayName.value = order.trade_no || `#${order.id}`;
-  // Period on Order is the same `*_price` key the user picked at /save.
-  // We map it back to the friendly label so the modal header reads naturally.
-  resumePeriodLabel.value = order.period
-    ? (PERIOD_LABEL_MAP[order.period] ?? order.period)
-    : null;
-  resumePriceCents.value = order.total_amount;
+function resume(order: Order) {
+  selected.value = order;
   showPurchase.value = true;
 }
-
-async function cancelOrder(order: Order) {
-  cancellingId.value = order.id;
+async function cancel(order: Order) {
+  cancelling.value = order.id;
   try {
     await api.cancelOrder(order.trade_no);
-    message.success(t("purchase.cancelled"));
+    toast.success("订单已取消，余额将由服务端退回");
     await load();
+    void auth.refreshUser().catch(() => {});
   } catch (e) {
-    message.error(formatError(e, t));
+    toast.error(formatError(e, t));
   } finally {
-    cancellingId.value = null;
+    cancelling.value = null;
   }
 }
-
-// After a resume payment settles we both refresh the list (so the row
-// flips to its new status) and refresh the user's plan / subscribe in
-// the auth store so Home.vue picks up the change.
-async function onPurchaseDone() {
+function done() {
   void load();
-  void auth.refreshUser();
-  void auth.refreshSubscribe();
+  void Promise.allSettled([auth.refreshUser(), auth.refreshSubscribe()]);
 }
-
-const PERIOD_LABEL_MAP: Record<string, string> = {
-  // Functions read at runtime so locale switches reflow naturally.
-  get month_price() { return t("plans.period.month"); },
-  get quarter_price() { return t("plans.period.quarter"); },
-  get half_year_price() { return t("plans.period.halfYear"); },
-  get year_price() { return t("plans.period.year"); },
-  get two_year_price() { return t("plans.period.twoYear"); },
-  get three_year_price() { return t("plans.period.threeYear"); },
-  get onetime_price() { return t("plans.period.onetime"); },
-  get reset_price() { return t("plans.resetPrice"); },
-};
-
-function yuan(cents: number): string {
-  return (cents / 100).toFixed(2);
+function name(order: Order) {
+  return planNames.value[order.plan_id ?? 0] || "订阅套餐";
 }
-
-function fmtDate(unix: number | null | undefined): string {
-  if (!unix) return "—";
-  return new Date(unix * 1000).toLocaleString();
+function date(value: number | null | undefined) {
+  return value
+    ? new Date(value * 1000).toLocaleString("zh-CN", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : "—";
 }
-
-// Status semantics from `core/src/api/order.rs`. Map to (label-key, NTag type)
-// so colour coding is consistent with the v2board admin panel users may have
-// seen elsewhere.
-const STATUS_META: Record<
-  number,
-  { labelKey: string; type: "default" | "info" | "success" | "warning" | "error" }
-> = {
-  0: { labelKey: "orders.status.pending", type: "warning" },
-  1: { labelKey: "orders.status.activating", type: "info" },
-  2: { labelKey: "orders.status.cancelled", type: "default" },
-  3: { labelKey: "orders.status.completed", type: "success" },
-  4: { labelKey: "orders.status.discounted", type: "info" },
-};
-
-const KIND_LABEL_KEY: Record<number, string> = {
-  1: "orders.kind.new",
-  2: "orders.kind.renew",
-  3: "orders.kind.upgrade",
-  4: "orders.kind.reset",
-};
-
-const columns: DataTableColumns<Order> = [
-  {
-    title: () => t("orders.col.tradeNo"),
-    key: "trade_no",
-    minWidth: 160,
-    render: (row) =>
-      h(NText, { code: true, depth: 2 }, () => row.trade_no || `#${row.id}`),
-  },
-  {
-    title: () => t("orders.col.kind"),
-    key: "kind",
-    width: 90,
-    render: (row) => {
-      if (row.type == null) return "—";
-      const key = KIND_LABEL_KEY[row.type];
-      return key ? t(key) : `#${row.type}`;
-    },
-  },
-  {
-    title: () => t("orders.col.period"),
-    key: "period",
-    width: 110,
-    render: (row) => row.period ?? "—",
-  },
-  {
-    title: () => t("orders.col.amount"),
-    key: "total_amount",
-    width: 120,
-    align: "right",
-    render: (row) =>
-      h(
-        "span",
-        { class: "amount-cell" },
-        `¥ ${yuan(row.total_amount)}`,
-      ),
-  },
-  {
-    title: () => t("orders.col.status"),
-    key: "status",
-    width: 110,
-    render: (row) => {
-      const meta = STATUS_META[row.status];
-      return h(
-        NTag,
-        { size: "small", bordered: false, type: meta?.type ?? "default" },
-        () => (meta ? t(meta.labelKey) : `#${row.status}`),
-      );
-    },
-  },
-  {
-    title: () => t("orders.col.createdAt"),
-    key: "created_at",
-    minWidth: 160,
-    render: (row) => fmtDate(row.created_at),
-  },
-  {
-    title: () => t("orders.col.actions"),
-    key: "actions",
-    width: 180,
-    render: (row) => {
-      // Only pending-payment rows are actionable on the user side. Once
-      // the order is activating/completed/cancelled the panel admin owns
-      // the next step.
-      if (row.status !== 0) return "—";
-      return h(NSpace, { size: 6, wrap: false }, () => [
-        h(
-          NButton,
-          {
-            size: "tiny",
-            type: "primary",
-            ghost: true,
-            disabled: cancellingId.value === row.id,
-            onClick: () => openResume(row),
-          },
-          () => t("orders.action.resume"),
-        ),
-        h(
-          NPopconfirm,
-          {
-            positiveText: t("purchase.cancelYes"),
-            negativeText: t("purchase.cancelNo"),
-            onPositiveClick: () => cancelOrder(row),
-          },
-          {
-            trigger: () =>
-              h(
-                NButton,
-                {
-                  size: "tiny",
-                  ghost: true,
-                  type: "warning",
-                  loading: cancellingId.value === row.id,
-                },
-                () => t("orders.action.cancel"),
-              ),
-            default: () => t("purchase.cancelConfirm"),
-          },
-        ),
-      ]);
-    },
-  },
-];
-
-const empty = computed(() => !loading.value && orders.value.length === 0);
+onMounted(() => {
+  void load();
+  window.addEventListener("focus", load);
+  void api
+    .fetchPlans()
+    .then((rows) => {
+      planNames.value = Object.fromEntries(rows.map((p) => [p.id, p.name]));
+    })
+    .catch(() => {});
+});
+onBeforeUnmount(() => {
+  active = false;
+  window.removeEventListener("focus", load);
+  if (refreshTimer) clearTimeout(refreshTimer);
+});
 </script>
-
 <template>
-  <NLayout class="orders-shell">
-    <NLayoutHeader bordered class="orders-header">
-      <NSpace align="center" :size="10">
-        <NButton size="small" quaternary @click="router.push({ name: 'home' })">
-          ← {{ t("orders.back") }}
-        </NButton>
-        <NText strong>{{ t("orders.title") }}</NText>
-      </NSpace>
-      <NButton size="small" quaternary :loading="loading" @click="load">
-        {{ t("orders.refresh") }}
-      </NButton>
-    </NLayoutHeader>
-
-    <NLayoutContent class="orders-content">
-      <div class="container">
-        <template v-if="loading && orders.length === 0">
-          <NSkeleton text :repeat="6" />
-        </template>
-
-        <NEmpty v-else-if="empty" :description="t('orders.empty')" />
-
-        <NDataTable
-          v-else
-          :columns="columns"
-          :data="orders"
-          :row-key="(row: Order) => row.id"
-          :bordered="false"
-          size="small"
-          striped
-        />
+  <section class="orders-page">
+    <div class="orders-intro">
+      <div>
+        <span class="eyebrow">YOUR SUBSCRIPTIONS, ORGANIZED</span>
+        <h2>每一笔订阅，都清晰可见。</h2>
+        <p>查看购买记录，继续付款，随时掌握订单进度。</p>
       </div>
-    </NLayoutContent>
-
+      <NButton type="primary" round @click="router.push({ name: 'plans' })"
+        >选购套餐 <span style="margin-left: 14px">→</span></NButton
+      >
+    </div>
+    <div class="order-stats">
+      <div>
+        <span class="stat-icon lavender"
+          ><AppIcon name="bag" :size="20"
+        /></span>
+        <section>
+          <small>全部订单</small><strong>{{ orders.length }}<em>笔</em></strong>
+        </section>
+      </div>
+      <div>
+        <span class="stat-icon peach"><AppIcon name="card" :size="20" /></span>
+        <section>
+          <small>待支付</small><strong>{{ pending.length }}<em>笔</em></strong>
+        </section>
+      </div>
+      <div>
+        <span class="stat-icon mint"><AppIcon name="check" :size="20" /></span>
+        <section>
+          <small>已完成 / 已折抵</small
+          ><strong>{{ completed.length }}<em>笔</em></strong>
+        </section>
+      </div>
+    </div>
+    <div class="orders-card">
+      <div class="orders-toolbar">
+        <div class="tabs">
+          <button
+            type="button"
+            :class="{ active: filter === 'all' }"
+            @click="filter = 'all'"
+          >
+            全部订单</button
+          ><button
+            type="button"
+            :class="{ active: filter === 'pending' }"
+            @click="filter = 'pending'"
+          >
+            待付款
+            <span v-if="pending.length">{{ pending.length }}</span></button
+          ><button
+            type="button"
+            :class="{ active: filter === 'complete' }"
+            @click="filter = 'complete'"
+          >
+            已完成
+          </button>
+        </div>
+        <NButton text :loading="loading" @click="load"
+          ><AppIcon name="refresh" :size="15"
+        /></NButton>
+      </div>
+      <div v-if="loading && !orders.length" class="empty">
+        <NSkeleton text :repeat="6" />
+      </div>
+      <div v-else-if="error && !orders.length" class="empty">
+        <NEmpty :description="error"
+          ><template #extra
+            ><NButton @click="load">重试</NButton></template
+          ></NEmpty
+        >
+      </div>
+      <div v-else-if="!shown.length" class="empty">
+        <div class="empty-bag"><AppIcon name="bag" :size="31" /></div>
+        <h3>
+          {{ filter === "pending" ? "没有待付款订单" : "还没有相关订单" }}
+        </h3>
+        <p>
+          {{
+            filter === "pending"
+              ? "一切准备就绪，享受你的连接。"
+              : "挑选一份适合自己的套餐，开启顺畅连接。"
+          }}
+        </p>
+        <NButton
+          v-if="filter === 'all'"
+          type="primary"
+          secondary
+          @click="router.push({ name: 'plans' })"
+          >查看套餐</NButton
+        >
+      </div>
+      <template v-else
+        ><div class="order-table-head">
+          <span>套餐与订单</span><span>金额</span><span>状态</span
+          ><span>操作</span>
+        </div>
+        <article v-for="order in shown" :key="order.id" class="order-row">
+          <div class="order-info">
+            <span class="order-icon"><AppIcon name="bag" :size="18" /></span>
+            <div>
+              <strong
+                >{{ name(order) }}
+                <small>{{
+                  periodNames[order.period || ""] || order.period
+                }}</small></strong
+              ><code>{{ order.trade_no }}</code
+              ><time>{{ date(order.created_at) }}</time>
+            </div>
+          </div>
+          <div class="order-amount">
+            <strong>¥{{ money(order.total_amount) }}</strong
+            ><small v-if="order.balance_amount"
+              >余额抵扣 ¥{{ money(order.balance_amount) }}</small
+            >
+          </div>
+          <div>
+            <span class="status" :class="'status-' + order.status"
+              ><i />{{ statuses[order.status] || "未知状态" }}</span
+            >
+          </div>
+          <div class="order-actions">
+            <template v-if="order.status === 0"
+              ><NButton
+                size="small"
+                type="primary"
+                secondary
+                :disabled="cancelling === order.id"
+                @click="resume(order)"
+                >继续支付</NButton
+              ><NPopconfirm
+                :positive-text="'确认取消'"
+                :negative-text="'保留订单'"
+                @positive-click="cancel(order)"
+                ><template #trigger
+                  ><NButton text size="tiny" :loading="cancelling === order.id"
+                    >取消订单</NButton
+                  ></template
+                >确认取消此订单？未支付订单将关闭，已抵扣余额按服务端规则退回。</NPopconfirm
+              ></template
+            ><NButton
+              v-else-if="order.status === 1"
+              size="small"
+              text
+              @click="load"
+              >检查进度</NButton
+            ><span v-else class="dash">—</span>
+          </div>
+        </article></template
+      >
+    </div>
+    <p class="order-footnote">
+      <AppIcon
+        name="check"
+        :size="13"
+      />支付后无需重复下单。返回客户端会自动更新订单状态；支付渠道手续费在付款核对页单独列出。
+    </p>
     <PurchaseModal
       v-model:show="showPurchase"
       :plan="null"
       :period-key="null"
-      :price-cents="resumePriceCents"
-      :existing-trade-no="resumeTradeNo"
-      :display-name="resumeDisplayName"
-      :display-period="resumePeriodLabel"
-      @done="onPurchaseDone"
+      :price-cents="selected?.total_amount ?? null"
+      :existing-trade-no="selected?.trade_no"
+      :display-name="selected ? name(selected) : null"
+      :display-period="periodNames[selected?.period || '']"
+      @done="done"
     />
-  </NLayout>
+  </section>
 </template>
-
 <style scoped>
-.orders-shell {
-  min-height: 100vh;
-  background: var(--n-color);
+.orders-page {
+  color: #242539;
 }
-.orders-header {
+.orders-intro {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 20px;
-  gap: 16px;
+  gap: 24px;
+  margin: 5px 0 28px;
 }
-.orders-content {
-  padding: 20px;
+.eyebrow {
+  font-size: 10px;
+  letter-spacing: 1.8px;
+  font-weight: 600;
+  color: #aaa7b9;
 }
-.container {
-  max-width: 960px;
-  margin: 0 auto;
+.orders-intro h2 {
+  font-size: 27px;
+  letter-spacing: -0.6px;
+  font-weight: 650;
+  margin: 11px 0 10px;
 }
-.amount-cell {
-  font-variant-numeric: tabular-nums;
+.orders-intro p {
+  font-size: 13px;
+  color: #9390a4;
+  margin: 0;
+}
+.order-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 19px;
+  margin-bottom: 24px;
+}
+.order-stats > div {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  background: #fff;
+  border: 1px solid #eeebf4;
+  padding: 21px 25px;
+  border-radius: 20px;
+}
+.stat-icon {
+  height: 44px;
+  width: 44px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.lavender {
+  background: #eeebfc;
+  color: #aa98d8;
+}
+.peach {
+  background: #fff3e8;
+  color: #dbb289;
+}
+.mint {
+  background: #eaf6f0;
+  color: #8ac0ae;
+}
+.order-stats small {
+  display: block;
+  font-size: 10px;
+  color: #aaa0b6;
+  margin-bottom: 5px;
+}
+.order-stats strong {
+  font-size: 23px;
+  line-height: 1.2;
+  font-weight: 600;
+}
+.order-stats em {
+  font-size: 10px;
+  font-style: normal;
+  color: #bfb4c7;
+  font-weight: 400;
+  margin-left: 7px;
+}
+.orders-card {
+  background: #fff;
+  border: 1px solid #eeebf4;
+  border-radius: 24px;
+  overflow: hidden;
+}
+.orders-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #f2eef7;
+  padding: 20px 26px 0;
+}
+.orders-toolbar :deep(.n-button) {
+  margin-bottom: 19px;
+  color: #b2a6bd;
+}
+.tabs {
+  display: flex;
+  gap: 25px;
+}
+.tabs button {
+  position: relative;
+  border: 0;
+  background: transparent;
+  padding: 0 0 21px;
+  color: #b4a9be;
+  font-size: 12px;
+  cursor: pointer;
+}
+.tabs button.active {
+  color: #8c76d3;
+  font-weight: 600;
+}
+.tabs button.active:after {
+  position: absolute;
+  content: "";
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: #9380dc;
+  border-radius: 5px;
+}
+.tabs span {
+  display: inline-block;
+  background: #f3eaf7;
+  color: #b08cbf;
+  font-size: 9px;
+  padding: 0 5px;
+  border-radius: 4px;
+  margin-left: 5px;
+}
+.order-table-head,
+.order-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 150px 115px 115px;
+  gap: 15px;
+  align-items: center;
+  padding: 16px 27px;
+}
+.order-table-head {
+  font-size: 10px;
+  color: #b8adc3;
+  background: #fdfbfe;
+}
+.order-row {
+  padding-top: 23px;
+  padding-bottom: 23px;
+  border-top: 1px solid #f6f2f9;
+}
+.order-info {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  min-width: 0;
+}
+.order-icon {
+  height: 39px;
+  width: 39px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  background: #f3eefb;
+  color: #b3a0cf;
+  flex-shrink: 0;
+}
+.order-info > div {
+  min-width: 0;
+}
+.order-info strong {
+  font-size: 12px;
+  font-weight: 550;
+  display: block;
+}
+.order-info strong small {
+  font-size: 10px;
+  color: #b5a6c1;
+  font-weight: 400;
+  margin-left: 4px;
+}
+.order-info code {
+  font-size: 9px;
+  color: #b4a7c1;
+  display: block;
+  margin: 5px 0;
+  overflow-wrap: anywhere;
+}
+.order-info time {
+  font-size: 9px;
+  color: #c7bbd1;
+}
+.order-amount strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 550;
+}
+.order-amount small {
+  display: block;
+  font-size: 9px;
+  color: #b3a2c2;
+  margin-top: 6px;
+}
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: #f7f4fa;
+  padding: 5px 8px;
+  border-radius: 6px;
+  color: #b3a7bf;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.status i {
+  height: 4px;
+  width: 4px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.status-0 {
+  color: #c7a373;
+  background: #fff7ea;
+}
+.status-1 {
+  color: #a08dd1;
+  background: #f4efff;
+}
+.status-3,
+.status-4 {
+  color: #84b2a0;
+  background: #edf7f2;
+}
+.order-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 9px;
+}
+.order-actions :deep(.n-button) {
+  font-size: 10px;
+  border-radius: 7px;
+}
+.order-actions :deep(.n-button--text-type) {
+  color: #b7a8c5;
+}
+.dash {
+  color: #d3cadb;
+}
+.order-footnote {
+  font-size: 10px;
+  line-height: 1.7;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #b5a8c2;
+  margin: 21px 7px;
+}
+.empty {
+  padding: 58px 25px;
+  text-align: center;
+}
+.empty-bag {
+  width: 70px;
+  height: 70px;
+  border-radius: 23px;
+  background: #f4eefb;
+  display: grid;
+  place-items: center;
+  color: #c3b0dc;
+  margin: 0 auto 22px;
+}
+.empty h3 {
+  font-size: 17px;
   font-weight: 500;
+}
+.empty p {
+  font-size: 12px;
+  color: #b4a6c1;
+  margin-bottom: 23px;
+}
+@media (max-width: 900px) {
+  .order-table-head,
+  .order-row {
+    grid-template-columns: minmax(0, 1fr) 100px 85px;
+    gap: 10px;
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+  .order-table-head > span:nth-child(3) {
+    display: none;
+  }
+  .order-row > div:nth-child(3) {
+    grid-column: 2;
+    grid-row: auto;
+  }
+  .order-row .order-actions {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+  .order-row .order-info {
+    grid-row: 1 / span 2;
+  }
+  .order-stats > div {
+    padding: 18px 16px;
+    gap: 10px;
+  }
+  .order-stats {
+    gap: 12px;
+  }
+}
+@media (max-width: 650px) {
+  .orders-intro h2 {
+    font-size: 23px;
+  }
+  .order-stats > div {
+    padding: 17px 11px;
+  }
+  .stat-icon {
+    display: none;
+  }
+  .order-stats small {
+    font-size: 9px;
+  }
+  .order-icon {
+    display: none;
+  }
 }
 </style>

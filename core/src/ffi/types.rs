@@ -132,6 +132,8 @@ pub struct UserInfo {
     pub expired_at: Option<i64>,
     pub uuid: Option<String>,
     pub avatar_url: Option<String>,
+    pub banned: bool,
+    pub transfer_enable: Option<u64>,
 }
 
 impl From<ApiUserInfo> for UserInfo {
@@ -144,6 +146,8 @@ impl From<ApiUserInfo> for UserInfo {
             expired_at: u.expired_at,
             uuid: u.uuid,
             avatar_url: u.avatar_url,
+            banned: u.banned,
+            transfer_enable: u.transfer_enable,
         }
     }
 }

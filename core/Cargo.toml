@@ -44,6 +44,9 @@ futures = { workspace = true }
 uniffi = { version = "0.28", features = ["tokio", "cli"] }
 
 reqwest = { workspace = true }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
 tokio-util = { workspace = true }
 tokio-stream = { workspace = true }
 
@@ -60,6 +63,7 @@ ring = { workspace = true }
 ed25519-dalek = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+base64 = "0.22"
 
 chrono = { workspace = true }
 url = { workspace = true }
@@ -86,3 +90,9 @@ keyring = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "test-util"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Pipes", "Win32_System_Services", "Win32_System_Threading", "Win32_System_IO"] }

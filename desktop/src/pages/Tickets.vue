@@ -9,9 +9,6 @@ import {
   NForm,
   NFormItem,
   NInput,
-  NLayout,
-  NLayoutContent,
-  NLayoutHeader,
   NModal,
   NSelect,
   NSkeleton,
@@ -131,11 +128,7 @@ const columns: DataTableColumns<Ticket> = [
     key: "subject",
     minWidth: 200,
     render: (row) =>
-      h(
-        NText,
-        { strong: true },
-        () => row.subject || `#${row.id}`,
-      ),
+      h(NText, { strong: true }, () => row.subject || `#${row.id}`),
   },
   {
     title: () => t("tickets.col.level"),
@@ -183,14 +176,13 @@ const empty = computed(() => !loading.value && tickets.value.length === 0);
 </script>
 
 <template>
-  <NLayout class="tickets-shell">
-    <NLayoutHeader bordered class="tickets-header">
-      <NSpace align="center" :size="10">
-        <NButton size="small" quaternary @click="router.push({ name: 'home' })">
-          ← {{ t("tickets.back") }}
-        </NButton>
-        <NText strong>{{ t("tickets.title") }}</NText>
-      </NSpace>
+  <section class="tickets-shell">
+    <div class="tickets-header">
+      <div>
+        <span class="eyebrow">SUPPORT, WITH CARE</span>
+        <h2>你的问题，我们持续跟进。</h2>
+        <p>提交工单，保留每一次沟通与解决进度。</p>
+      </div>
       <NSpace :size="6">
         <NButton size="small" type="primary" @click="openComposer">
           + {{ t("tickets.composer.new") }}
@@ -199,9 +191,9 @@ const empty = computed(() => !loading.value && tickets.value.length === 0);
           {{ t("tickets.refresh") }}
         </NButton>
       </NSpace>
-    </NLayoutHeader>
+    </div>
 
-    <NLayoutContent class="tickets-content">
+    <div class="tickets-content">
       <div class="container">
         <template v-if="loading && tickets.length === 0">
           <NSkeleton text :repeat="6" />
@@ -222,17 +214,16 @@ const empty = computed(() => !loading.value && tickets.value.length === 0);
           :row-key="(row: Ticket) => row.id"
           :row-props="rowProps"
           :bordered="false"
-          size="small"
-          striped
+          size="large"
         />
       </div>
-    </NLayoutContent>
+    </div>
 
     <NModal
       v-model:show="composerOpen"
       preset="card"
       :title="t('tickets.composer.title')"
-      style="max-width: 520px"
+      style="width: min(520px, calc(100vw - 32px)); border-radius: 24px"
       :mask-closable="!submitting"
       :closable="!submitting"
     >
@@ -281,26 +272,72 @@ const empty = computed(() => !loading.value && tickets.value.length === 0);
         </NSpace>
       </template>
     </NModal>
-  </NLayout>
+  </section>
 </template>
 
 <style scoped>
 .tickets-shell {
-  min-height: 100vh;
-  background: var(--n-color);
+  color: #242539;
 }
 .tickets-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 20px;
+  margin: 5px 0 28px;
   gap: 16px;
 }
 .tickets-content {
-  padding: 20px;
+  padding: 26px;
+  border-radius: 24px;
+  background: #fff;
+  border: 1px solid #eeebf4;
 }
 .container {
-  max-width: 960px;
-  margin: 0 auto;
+  width: 100%;
+}
+.eyebrow {
+  font-size: 10px;
+  letter-spacing: 1.8px;
+  font-weight: 600;
+  color: #aaa7b9;
+}
+.tickets-header h2 {
+  font-size: 27px;
+  letter-spacing: -0.6px;
+  font-weight: 650;
+  margin: 11px 0 10px;
+}
+.tickets-header p {
+  font-size: 13px;
+  color: #9390a4;
+  margin: 0;
+}
+.tickets-content :deep(.n-empty) {
+  padding: 55px 0;
+}
+.tickets-content :deep(.n-data-table-th) {
+  font-size: 11px;
+  color: #a59aae;
+  background: #fcfafe;
+}
+.tickets-content :deep(.n-data-table-td) {
+  font-size: 12px;
+  padding-top: 22px;
+  padding-bottom: 22px;
+}
+.tickets-header :deep(.n-button) {
+  border-radius: 10px;
+}
+@media (max-width: 760px) {
+  .tickets-header {
+    flex-wrap: wrap;
+  }
+  .tickets-header h2 {
+    font-size: 23px;
+  }
+  .tickets-content {
+    padding: 14px;
+    overflow: auto;
+  }
 }
 </style>

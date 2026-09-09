@@ -6,6 +6,8 @@
 mod commands;
 mod config;
 mod error;
+#[cfg(target_os = "linux")]
+mod linux_launcher;
 #[cfg(target_os = "macos")]
 mod helper_install;
 mod persistence;
@@ -22,7 +24,6 @@ use std::sync::Arc;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, RunEvent, WindowEvent};
-use xboard_core::api::HttpClient;
 #[cfg(any(target_os = "windows", target_os = "macos", target_os = "linux"))]
 use xboard_core::storage::KeyringStore;
 use xboard_core::storage::SecureStore;
@@ -68,7 +69,7 @@ pub fn run() {
             // the HttpClient eagerly so the frontend can call any auth/user
             // command without first asking the user for a host.
             if let Some(state) = app.try_state::<AppState>() {
-                match HttpClient::new(config::BACKEND_URL, config::DEFAULT_LOCALE) {
+                match config::create_client() {
                     Ok(client) => *state.client.write() = Some(client),
                     Err(e) => tracing::error!(error = %e, "failed to init HttpClient"),
                 }
@@ -111,8 +112,14 @@ pub fn run() {
             let connect_item = MenuItem::with_id(app, "tray-connect", "连接", true, None::<&str>)?;
             let disconnect_item =
                 MenuItem::with_id(app, "tray-disconnect", "断开", true, None::<&str>)?;
-            let mode_tun_item =
-                MenuItem::with_id(app, "tray-mode-tun", "TUN 模式", true, None::<&str>)?;
+            let mode_tun_item = MenuItem::with_id(
+                app,
+                "tray-mode-tun",
+                "TUN 模式",
+                cfg!(target_os = "linux")
+                    || xboard_core::kernel::launcher::PRIVILEGED_LAUNCH_ENABLED,
+                None::<&str>,
+            )?;
             let mode_sys_item = MenuItem::with_id(
                 app,
                 "tray-mode-sysproxy",
@@ -122,7 +129,7 @@ pub fn run() {
             )?;
             let logs_item = MenuItem::with_id(app, "tray-logs", "实时日志", true, None::<&str>)?;
             let show_item = MenuItem::with_id(app, "tray-show", "显示主窗口", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "tray-quit", "退出 Xboard", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "tray-quit", "退出 Sufe", true, None::<&str>)?;
             let sep1 = PredefinedMenuItem::separator(app)?;
             let sep2 = PredefinedMenuItem::separator(app)?;
             let sep3 = PredefinedMenuItem::separator(app)?;
@@ -148,7 +155,7 @@ pub fn run() {
                         .cloned()
                         .expect("default window icon should be configured"),
                 )
-                .tooltip("Xboard — 未连接")
+                .tooltip("Sufe — 未连接")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, event| match event.id().as_ref() {
@@ -211,23 +218,7 @@ pub fn run() {
             // destroyed. Otherwise mihomo lingers and TUN routes / system
             // proxy stay applied — exactly the failure mode users hate.
             WindowEvent::Destroyed if window.label() == "main" => {
-                let state = match window.app_handle().try_state::<AppState>() {
-                    Some(s) => s,
-                    None => return,
-                };
-                let Some(km) = state.kernel.get().cloned() else {
-                    return;
-                };
-                // Bound the teardown: `disconnect` clears the OS proxy *first*
-                // and then stops the kernel, so even if a hung kernel makes the
-                // stop step stall, the proxy is already restored. The 3 s cap
-                // guarantees exit never blocks indefinitely (the OS reaps the
-                // child via kill_on_drop regardless).
-                tauri::async_runtime::block_on(async move {
-                    let _ =
-                        tokio::time::timeout(std::time::Duration::from_secs(3), km.disconnect())
-                            .await;
-                });
+                cleanup_kernel(window.app_handle());
             }
             _ => {}
         })
@@ -242,6 +233,15 @@ pub fn run() {
             commands::session::hydrate_session,
             commands::session::check_login,
             commands::guest::fetch_site_config,
+            commands::guest::fetch_client_config,
+            commands::guest::gift_card_check,
+            commands::guest::gift_card_redeem,
+            commands::guest::gift_card_history,
+            commands::guest::fetch_invites,
+            commands::guest::create_invite,
+            commands::custom_rules::fetch_custom_rules,
+            commands::custom_rules::save_custom_rules,
+            commands::support::support_request,
             commands::user::current_user,
             commands::user::current_subscribe,
             commands::connection::connect,
@@ -271,6 +271,8 @@ pub fn run() {
             commands::notice::fetch_notices,
             commands::billing::fetch_plans,
             commands::billing::fetch_orders,
+            commands::billing::fetch_order,
+            commands::billing::open_payment_window,
             commands::billing::fetch_payment_methods,
             commands::billing::save_order,
             commands::billing::checkout_order,
@@ -290,10 +292,25 @@ pub fn run() {
     // can latch `quit_requested` on `ExitRequested`. Without this, Cmd+Q on
     // macOS / shutdown on Windows would be silently swallowed by our
     // close-to-tray handler.
-    app.run(move |_app, event| {
-        if let RunEvent::ExitRequested { code: None, .. } = event {
+    app.run(move |app, event| {
+        if let RunEvent::ExitRequested { .. } = event {
             qr_for_run.store(true, Ordering::SeqCst);
+            cleanup_kernel(app);
         }
+    });
+}
+
+/// Every exit entry point restores the proxy before the event loop ends.
+fn cleanup_kernel(app: &tauri::AppHandle) {
+    let Some(state) = app.try_state::<AppState>() else {
+        return;
+    };
+    state.connection_generation.fetch_add(1, Ordering::SeqCst);
+    let Some(manager) = state.kernel.get().cloned() else {
+        return;
+    };
+    tauri::async_runtime::block_on(async move {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(5), manager.disconnect()).await;
     });
 }
 
@@ -361,7 +378,7 @@ fn update_tray_tooltip(app: &tauri::AppHandle, state: &xboard_core::kernel::Conn
         ConnectionState::Error { .. } => "连接错误".to_string(),
     };
     if let Some(tray) = app.tray_by_id("xboard-main") {
-        let _ = tray.set_tooltip(Some(&format!("Xboard — {label}")));
+        let _ = tray.set_tooltip(Some(&format!("Sufe — {label}")));
     }
 }
 

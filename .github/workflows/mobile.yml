@@ -16,11 +16,12 @@ name: Release Mobile
 #   ANDROID_KEY_ALIAS          signing key alias
 #   ANDROID_KEY_PASSWORD       signing key password
 #
-# If the keystore secret is empty, the job ships an unsigned-but-zipaligned
-# APK. Unsigned APKs install on developer devices via `adb install -t`,
-# but Google Play and the in-app updater (sha256-checked) require signing.
+# A release without a keystore is rejected. Android in-app updating is not
+# implemented; the generated manifest is distribution metadata only.
 
 on:
+  release:
+    types: [published]
   push:
     tags:
       - 'v*'
@@ -31,10 +32,12 @@ permissions:
 
 env:
   CI: 'true'
-  MIHOMO_VERSION: ${{ vars.MIHOMO_VERSION || 'v1.18.7' }}
+  MIHOMO_VERSION: ${{ vars.MIHOMO_VERSION || 'v1.19.30' }}
+  SUFE_DEPLOYMENT_JSON: ${{ secrets.SUFE_DEPLOYMENT_JSON }}
 
 jobs:
   android:
+    if: github.event_name != 'release'
     name: Android APK
     runs-on: ubuntu-22.04
     env:
@@ -45,6 +48,17 @@ jobs:
       HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Require Android signing configuration
+        env:
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE" && test -n "$STORE_PASSWORD" && test -n "$KEY_ALIAS" && test -n "$KEY_PASSWORD" || {
+            echo '::error::All four Android signing secrets are required for a release'; exit 1;
+          }
 
       - name: Install Linux build dependencies
         # The `:app:generateUniffiBindings` Gradle task runs `cargo run -p
@@ -69,8 +83,8 @@ jobs:
           workspaces: '. -> target'
           shared-key: release-android
 
-      - name: Install cargo-ndk + uniffi-bindgen
-        run: cargo install cargo-ndk uniffi-bindgen-cli --locked || true
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
 
       - name: Setup JDK 17
         uses: actions/setup-java@v4
@@ -80,6 +94,11 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+
+      - name: Install pinned Android SDK and NDK
+        run: |
+          sdkmanager "ndk;27.3.13750724" "platforms;android-34" "build-tools;34.0.0"
+          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/27.3.13750724" >> "${GITHUB_ENV}"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
@@ -91,7 +110,7 @@ jobs:
         run: |
           cd core
           cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 \
-            -o ../android/app/src/main/jniLibs build --release
+            --platform 24 -o ../android/app/src/main/jniLibs build --release --locked --lib -p xboard-core
 
       - name: Fetch mihomo Android binaries
         run: bash ci/scripts/install-mihomo-android.sh "${MIHOMO_VERSION}"
@@ -103,24 +122,35 @@ jobs:
       - name: Sign release APK
         id: sign
         if: ${{ env.HAS_KEYSTORE == 'true' }}
-        uses: r0adkll/sign-android-release@v1
-        with:
-          releaseDirectory: android/app/build/outputs/apk/release
-          signingKeyBase64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-          keyStorePassword: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          alias: ${{ secrets.ANDROID_KEY_ALIAS }}
-          keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
         env:
-          BUILD_TOOLS_VERSION: '34.0.0'
+          KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          umask 077
+          keyfile="${RUNNER_TEMP}/sufe-release.jks"
+          trap 'rm -f "${keyfile}"' EXIT
+          printf '%s' "${KEYSTORE}" | base64 --decode > "${keyfile}"
+          tools="${ANDROID_HOME}/build-tools/34.0.0"
+          unsigned=android/app/build/outputs/apk/release/app-release-unsigned.apk
+          aligned="${RUNNER_TEMP}/sufe-aligned.apk"
+          signed=android/app/build/outputs/apk/release/app-release-signed.apk
+          "${tools}/zipalign" -f -p 4 "${unsigned}" "${aligned}"
+          "${tools}/apksigner" sign --ks "${keyfile}" --ks-key-alias "${KEY_ALIAS}" \
+            --ks-pass env:STORE_PASSWORD --key-pass env:KEY_PASSWORD --out "${signed}" "${aligned}"
+          "${tools}/apksigner" verify "${signed}"
+          echo "signedReleaseFile=${signed}" >> "${GITHUB_OUTPUT}"
+
+      - name: Verify native ABI completeness and 16 KB compatibility
+        run: python3 android/verify-native.py "${{ steps.sign.outputs.signedReleaseFile }}"
 
       - name: Compute APK sha256
         id: hash
         run: |
           set -euo pipefail
-          apk=$(ls android/app/build/outputs/apk/release/*-signed.apk \
-                  android/app/build/outputs/apk/release/*-unsigned.apk \
-                  android/app/build/outputs/apk/release/*.apk \
-                  2>/dev/null | head -n1)
+          apk="${{ steps.sign.outputs.signedReleaseFile }}"
           if [ -z "${apk}" ]; then
             echo "::error::no APK produced under android/app/build/outputs/apk/release"
             exit 1
@@ -163,12 +193,22 @@ jobs:
           name: mobile-manifest-android
           path: _manifest/mobile/android/latest.json
 
+      - name: Attach mobile manifest to draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp _manifest/mobile/android/latest.json android-latest.json
+          gh release upload "${GITHUB_REF_NAME}" android-latest.json --clobber
+
   # ---------------- Publish gh-pages manifest ----------------
   publish-mobile-manifest:
     name: Publish mobile manifest
     needs: [android]
     runs-on: ubuntu-22.04
-    if: success()
+    if: always() && github.event_name == 'release'
+    concurrency:
+      group: publish-update-manifests
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -185,11 +225,13 @@ jobs:
             git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
           fi
 
-      - name: Download manifest artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: mobile-manifest-android
-          path: mobile/android
+      - name: Download published mobile manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p mobile/android
+          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --pattern android-latest.json --dir mobile/android --clobber
+          mv mobile/android/android-latest.json mobile/android/latest.json
 
       - name: Commit & push gh-pages
         env:

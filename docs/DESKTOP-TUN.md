@@ -1,0 +1,24 @@
+# 桌面默认 TUN
+
+新安装默认使用 TUN。已明确保存的系统代理偏好继续保留，可在设置中切回 TUN。取消系统授权会停止连接并保留 TUN 选择，不会显示已经连接或自动降级。
+
+当前固定官方稳定内核为 **mihomo v1.19.30**（2026-09-09 核对）。下载校验使用官方 release API 的 SHA256；版本统一记录于 `ci/mihomo-version.txt`。Windows 和 Linux amd64 默认 compatible 归档。
+
+## 首次连接
+
+- Windows：使用 NSIS 安装到 Program Files。首次 TUN 连接请求 UAC 安装并启动专用 `xboard-svc` 服务；普通桌面进程保持用户权限。开发目录不能作为 SYSTEM 服务执行目录。
+- macOS：将应用放入 Applications 后打开。首次连接请求系统管理员授权，将 helper 与 mihomo 的校验快照安装到 root 拥有的目录，由 LaunchDaemon 启动。两个 CPU 架构分别打包，使用 ad-hoc 签名，尚无 Apple 公证。
+- Linux deb：安装脚本对包内 mihomo 授予有效的网络 capability。
+- Linux AppImage：首次连接通过 polkit 安装匹配构建 SHA256 的内核到 `/usr/local/lib/sufe/mihomo`。需要桌面认证代理、`pkexec` 和 `setcap`；再次运行相同内核不重复授权。
+
+## 权限服务
+
+Windows/macOS 仅接受有界内联 YAML；执行路径、配置、日志和工作目录均由服务决定。旧路径型 IPC 被拒绝。节点以内联列表提供，特权模式不接受远程 proxy-providers、本地证书/脚本/文件路径等配置；HTTP(S) 规则集使用服务生成的私有文件名。
+
+普通客户端连接受限控制代理，只能读取运行状态、节点、日志、流量、规则与连接，切换节点和关闭连接。内部 mihomo 控制端口和独立密钥由服务持有，配置写入、升级、重启和文件管理接口不可通过该代理访问。发送私有凭据前核对监听端口所属进程。
+
+安装者身份通过操作系统的 UID/SID 验证；Windows 额外核对命名管道服务进程。每次启动使用新的私有配置与控制密钥。应用或内核版本变化会触发已安装服务升级，避免 UI 内核与特权内核版本不一致。
+
+## 验证记录
+
+核心配置约束、真实本地 HTTP 控制代理、流式日志脱敏、取消授权不降级均有独立回归测试。平台完整构建、包内架构和内核版本、系统权限与启动测试见 [原生构建记录](DESKTOP-NATIVE-BUILDS.md)。没有有效机场测试账号时，安装与控制接口验证不能替代真实订阅、出口流量和 DNS 数据面验收。

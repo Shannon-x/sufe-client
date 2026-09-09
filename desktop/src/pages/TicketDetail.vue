@@ -1,5 +1,12 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import {
@@ -7,9 +14,6 @@ import {
   NButton,
   NCard,
   NInput,
-  NLayout,
-  NLayoutContent,
-  NLayoutHeader,
   NPopconfirm,
   NSkeleton,
   NSpace,
@@ -32,6 +36,10 @@ const loading = ref(true);
 const replyDraft = ref("");
 const replying = ref(false);
 const closing = ref(false);
+const loadError = ref("");
+let pollTimer: ReturnType<typeof setTimeout> | undefined;
+let active = true;
+let fetching = false;
 
 // Maps mirror Tickets.vue. Keep them in lockstep — divergence will surface
 // as colour swaps that confuse users navigating list ↔ detail.
@@ -52,18 +60,32 @@ const LEVEL_META: Record<
 };
 
 async function load() {
+  if (fetching) return;
+  fetching = true;
+  if (pollTimer) clearTimeout(pollTimer);
   loading.value = true;
+  const id = props.id;
   try {
-    ticket.value = await api.fetchTicket(props.id);
+    const result = await api.fetchTicket(id);
+    if (id !== props.id || !active) return;
+    ticket.value = result;
+    loadError.value = "";
   } catch (e) {
-    message.error(formatError(e, t));
+    loadError.value = formatError(e, t);
   } finally {
+    fetching = false;
     loading.value = false;
+    if (active && ticket.value?.status === 0)
+      pollTimer = setTimeout(() => void load(), 15000);
   }
 }
 
 onMounted(load);
 watch(() => props.id, load);
+onBeforeUnmount(() => {
+  active = false;
+  if (pollTimer) clearTimeout(pollTimer);
+});
 
 const isOpen = computed(() => ticket.value?.status === 0);
 
@@ -138,10 +160,14 @@ function plain(html: string): string {
 </script>
 
 <template>
-  <NLayout class="td-shell">
-    <NLayoutHeader bordered class="td-header">
+  <section class="td-shell">
+    <div class="td-header">
       <NSpace align="center" :size="10">
-        <NButton size="small" quaternary @click="router.push({ name: 'tickets' })">
+        <NButton
+          size="small"
+          quaternary
+          @click="router.push({ name: 'tickets' })"
+        >
           ← {{ t("tickets.back") }}
         </NButton>
         <NText strong>{{ t("tickets.detailTitle") }}</NText>
@@ -149,10 +175,13 @@ function plain(html: string): string {
       <NButton size="small" quaternary :loading="loading" @click="load">
         {{ t("tickets.refresh") }}
       </NButton>
-    </NLayoutHeader>
+    </div>
 
-    <NLayoutContent class="td-content">
+    <div class="td-content">
       <div class="container">
+        <NAlert v-if="loadError" type="warning" :show-icon="false"
+          >{{ loadError }}<NButton text @click="load">重新加载</NButton></NAlert
+        >
         <NSkeleton v-if="loading && !ticket" text :repeat="6" />
 
         <template v-else-if="ticket">
@@ -203,11 +232,7 @@ function plain(html: string): string {
                 <div class="bubble-meta">{{ fmtDate(m.created_at) }}</div>
               </div>
             </div>
-            <NText
-              v-if="ticket.message.length === 0"
-              depth="3"
-              class="no-msg"
-            >
+            <NText v-if="ticket.message.length === 0" depth="3" class="no-msg">
               {{ t("tickets.noMessages") }}
             </NText>
           </div>
@@ -246,44 +271,40 @@ function plain(html: string): string {
             </NSpace>
           </NCard>
 
-          <NAlert
-            v-else
-            type="default"
-            :show-icon="false"
-            class="closed-alert"
-          >
+          <NAlert v-else type="default" :show-icon="false" class="closed-alert">
             {{ t("tickets.closedHint") }}
           </NAlert>
         </template>
       </div>
-    </NLayoutContent>
-  </NLayout>
+    </div>
+  </section>
 </template>
 
 <style scoped>
 .td-shell {
-  min-height: 100vh;
-  background: var(--n-color);
+  color: #242539;
 }
 .td-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 10px 20px;
+  margin-bottom: 22px;
   gap: 16px;
 }
 .td-content {
-  padding: 20px;
+  padding: 26px;
+  background: #fff;
+  border: 1px solid #eeebf4;
+  border-radius: 24px;
 }
 .container {
-  max-width: 760px;
-  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 .meta-card {
-  border-radius: 10px;
+  border-radius: 16px;
+  background: #faf8ff;
 }
 .subject {
   font-size: 16px;
@@ -297,7 +318,8 @@ function plain(html: string): string {
   flex-direction: column;
   gap: 10px;
   padding: 4px;
-  max-height: 60vh;
+  min-height: 260px;
+  max-height: 48vh;
   overflow-y: auto;
 }
 .no-msg {
@@ -314,14 +336,17 @@ function plain(html: string): string {
 }
 .bubble {
   max-width: 78%;
-  background: var(--n-action-color, rgba(128, 128, 128, 0.08));
-  border-radius: 10px;
-  padding: 8px 12px;
+  background: #f4effa;
+  color: #80708f;
+  border-radius: 3px 16px 16px 16px;
+  padding: 13px 17px;
   font-size: 13px;
   line-height: 1.55;
 }
 .bubble.mine {
-  background: var(--n-color-target, rgba(24, 160, 88, 0.12));
+  background: #8271d9;
+  color: #fff;
+  border-radius: 16px 3px 16px 16px;
 }
 .bubble-body {
   margin: 0;
@@ -336,7 +361,8 @@ function plain(html: string): string {
   font-variant-numeric: tabular-nums;
 }
 .reply-card {
-  border-radius: 10px;
+  border-radius: 16px;
+  background: #fcfbfe;
 }
 .reply-actions {
   margin-top: 10px;

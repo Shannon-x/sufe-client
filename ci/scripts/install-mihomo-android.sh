@@ -6,12 +6,12 @@
 #   ci/scripts/install-mihomo-android.sh <version>            # all 3 ABIs
 #   ci/scripts/install-mihomo-android.sh <version> arm64-v8a  # one ABI
 #
-# `<version>` is a mihomo Meta release tag, e.g. `v1.19.10`.
+# `<version>` is a mihomo Meta release tag, e.g. `v1.19.30`.
 #
 # Why "libmihomo.so" — Android 12+ blocks execve from /data/data, but
 # the OS's nativeLibraryDir (where jniLibs land) keeps the exec bit.
 # Disguising the binary as a .so is the standard workaround used by
-# clash-for-android, mihomo-party, etc. AGP packages it uncompressed
+# clash-for-android, mihomo-party, etc. AGP uses legacy native-library extraction so execve has a real file
 # (see app/build.gradle.kts → packaging.jniLibs.useLegacyPackaging).
 
 set -euo pipefail
@@ -25,6 +25,7 @@ VERSION="$1"
 ABI="${2:-all}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+source "${REPO_ROOT}/ci/scripts/verify-download.sh"
 DEST_ROOT="${REPO_ROOT}/android/app/src/main/jniLibs"
 
 # Map Android ABI -> MetaCubeX release artifact name.
@@ -49,6 +50,7 @@ install_one() {
     mkdir -p "${out_dir}"
     echo "→ ${abi}: ${url}"
     curl -fsSL "${url}" -o "${tmp}/${artifact}"
+    verify_download "${VERSION}" "${artifact}" "${tmp}/${artifact}"
     gunzip -c "${tmp}/${artifact}" > "${out}"
     chmod +x "${out}"
     rm -rf "${tmp}"

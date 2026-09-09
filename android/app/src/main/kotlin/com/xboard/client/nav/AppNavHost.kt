@@ -6,9 +6,25 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Language
+import androidx.compose.material.icons.filled.ShoppingBag
+import androidx.compose.material.icons.filled.SupportAgent
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -19,6 +35,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.NavType
 import androidx.navigation.navArgument
 import com.xboard.client.ui.screens.ConnectScreen
@@ -31,6 +48,10 @@ import com.xboard.client.ui.screens.PlansScreen
 import com.xboard.client.ui.screens.RegisterScreen
 import com.xboard.client.ui.screens.TicketDetailScreen
 import com.xboard.client.ui.screens.TicketsScreen
+import com.xboard.client.ui.screens.AccountScreen
+import com.xboard.client.ui.screens.RulesScreen
+import com.xboard.client.ui.screens.FeaturesScreen
+import com.xboard.client.ui.screens.SupportScreen
 import com.xboard.client.vm.AppViewModel
 import com.xboard.client.vm.AuthState
 import com.xboard.client.vm.UiEvent
@@ -55,6 +76,15 @@ fun AppNavHost(
     val snackbarHostState = remember { SnackbarHostState() }
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_START) viewModel.business.setForeground(true)
+            if (event == Lifecycle.Event.ON_STOP) viewModel.business.setForeground(false)
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
 
     // One-shot UI events.
     LaunchedEffect(viewModel) {
@@ -133,7 +163,39 @@ private fun AuthFlow(viewModel: AppViewModel) {
 @Composable
 private fun MainFlow(viewModel: AppViewModel, vpnBinder: VpnBinder) {
     val nav: NavHostController = rememberNavController()
-    NavHost(navController = nav, startDestination = Routes.HOME) {
+    val business by viewModel.business.state.collectAsState()
+    val entry by nav.currentBackStackEntryAsState()
+    val required = when (entry?.destination?.route) {
+        Routes.PLANS -> "purchase"
+        Routes.RULES -> "custom_rules"
+        Routes.TICKETS, Routes.TICKET_DETAIL -> "tickets"
+        Routes.NOTICES -> "notice"
+        else -> null
+    }
+    LaunchedEffect(required, business.config, business.hidden) {
+        if (required != null && !business.enabled(required)) nav.popBackStack(Routes.HOME, false)
+    }
+    Scaffold(bottomBar = {
+        NavigationBar {
+            val tabs = buildList {
+                add(Triple(Routes.HOME, "总览", Icons.Default.Home))
+                add(Triple(Routes.CONNECT, "节点", Icons.Default.Language))
+                if (business.enabled("purchase")) add(Triple(Routes.PLANS, "订阅", Icons.Default.ShoppingBag))
+                if (business.enabled("chatwoot")) add(Triple(Routes.SUPPORT, "客服", Icons.Default.SupportAgent))
+                add(Triple(Routes.ACCOUNT, "我的", Icons.Default.Person))
+            }
+            val selected = when (entry?.destination?.route) {
+                Routes.ORDERS, Routes.RULES, Routes.FEATURES -> Routes.ACCOUNT
+                else -> entry?.destination?.route
+            }
+            tabs.forEach { (route, label, icon) -> NavigationBarItem(
+                selected = selected == route,
+                onClick = { nav.navigate(route) { popUpTo(Routes.HOME) { saveState = true }; launchSingleTop = true; restoreState = true } },
+                icon = { Icon(icon, contentDescription = null) }, label = { Text(label) },
+            ) }
+        }
+    }) { inner ->
+    NavHost(navController = nav, startDestination = Routes.HOME, modifier = Modifier.padding(inner)) {
         composable(Routes.HOME) {
             HomeScreen(
                 viewModel = viewModel,
@@ -143,6 +205,10 @@ private fun MainFlow(viewModel: AppViewModel, vpnBinder: VpnBinder) {
                 onOpenOrders = { nav.navigate(Routes.ORDERS) },
                 onOpenTickets = { nav.navigate(Routes.TICKETS) },
                 onOpenNotices = { nav.navigate(Routes.NOTICES) },
+                onOpenAccount = { nav.navigate(Routes.ACCOUNT) },
+                onOpenRules = { nav.navigate(Routes.RULES) },
+                onOpenFeatures = { nav.navigate(Routes.FEATURES) },
+                onOpenSupport = { nav.navigate(Routes.SUPPORT) },
             )
         }
         composable(Routes.CONNECT) {
@@ -153,13 +219,13 @@ private fun MainFlow(viewModel: AppViewModel, vpnBinder: VpnBinder) {
             )
         }
         composable(Routes.PLANS) {
-            PlansScreen(viewModel = viewModel, onBack = { nav.popBackStack() })
+            if (business.enabled("purchase")) PlansScreen(viewModel = viewModel, onBack = { nav.popBackStack() })
         }
         composable(Routes.ORDERS) {
             OrdersScreen(viewModel = viewModel, onBack = { nav.popBackStack() })
         }
         composable(Routes.TICKETS) {
-            TicketsScreen(
+            if (business.enabled("tickets")) TicketsScreen(
                 viewModel = viewModel,
                 onBack = { nav.popBackStack() },
                 onOpen = { nav.navigate(Routes.ticketDetail(it)) },
@@ -170,14 +236,19 @@ private fun MainFlow(viewModel: AppViewModel, vpnBinder: VpnBinder) {
             arguments = listOf(navArgument(Routes.TICKET_DETAIL_ARG) { type = NavType.LongType }),
         ) { entry ->
             val id = entry.arguments?.getLong(Routes.TICKET_DETAIL_ARG) ?: return@composable
-            TicketDetailScreen(
+            if (business.enabled("tickets")) TicketDetailScreen(
                 viewModel = viewModel,
                 ticketId = id,
                 onBack = { nav.popBackStack() },
             )
         }
         composable(Routes.NOTICES) {
-            NoticesScreen(viewModel = viewModel, onBack = { nav.popBackStack() })
+            if (business.enabled("notice")) NoticesScreen(viewModel = viewModel, onBack = { nav.popBackStack() })
         }
+        composable(Routes.ACCOUNT) { AccountScreen(viewModel, onBack = { nav.popBackStack() }, onOrders = { nav.navigate(Routes.ORDERS) }, onRules = { nav.navigate(Routes.RULES) }, onFeatures = { nav.navigate(Routes.FEATURES) }) }
+        composable(Routes.RULES) { if (business.enabled("custom_rules")) RulesScreen(viewModel, onBack = { nav.popBackStack() }) }
+        composable(Routes.FEATURES) { FeaturesScreen(viewModel, onBack = { nav.popBackStack() }) }
+        composable(Routes.SUPPORT) { SupportScreen(viewModel, onBack = { nav.popBackStack() }, onTickets = { nav.navigate(Routes.TICKETS) }) }
+    }
     }
 }

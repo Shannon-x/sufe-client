@@ -4,7 +4,8 @@
 // lines, with level filter, pause, clear and near-bottom auto-follow.
 import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen } from "@/platform";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import {
   NButton,
   NEmpty,
@@ -26,6 +27,7 @@ const paused = ref(false);
 const scroller = ref<HTMLElement | null>(null);
 
 let unlisten: UnlistenFn | null = null;
+let disposed = false;
 
 const levelOptions = [
   { label: "全部", value: "all" },
@@ -74,9 +76,11 @@ onMounted(async () => {
     }
     if (follow) void autoFollow();
   });
+  if (disposed) unlisten();
 });
 
 onUnmounted(() => {
+  disposed = true;
   if (unlisten) unlisten();
 });
 </script>

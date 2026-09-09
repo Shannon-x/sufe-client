@@ -1,146 +1,94 @@
-# Sufe Client — 首次部署指南
+# SUFE Client 构建与部署
 
-零付费方案：用 GitHub 自带 CDN 做客户端自动更新。
-仓库地址：`git@github.com:Shannon-x/sufe-client.git`。
+先完成专属后端配置、生成可审查安装包，再在对应平台验证登录、购买、连接、退出网络恢复。源代码修改或公共接口可达不等于已经完成发行。
 
-发布产物挂在 GitHub Releases，更新 manifest 推到 GitHub Pages。
-客户端的 updater endpoint 已配成
-`https://shannon-x.github.io/sufe-client/desktop/latest.json`。
+## 1. 后端配置
 
----
+参见 [client-deployment.md](docs/client-deployment.md)。完整 JSON 通过构建环境变量 `SUFE_DEPLOYMENT_JSON` 嵌入；简单部署可设置 `SUFE_BACKEND_URL`。所有备用 API 必须属于同一运营方和同一账户数据库。运行时不开放任意后端输入。
 
-## 1. 本地一次性生成签名密钥
+PowerShell 示例（配置文件应放在仓库外的受限运维目录）：
 
-只跑一次，跑完把生成的 secret 贴进 GitHub。
-
-```sh
-cd xboard-client
-bash ci/scripts/generate-release-keys.sh all
+```powershell
+$env:SUFE_DEPLOYMENT_JSON = Get-Content -Raw -LiteralPath 'C:\private\sufe-deployment.json'
 ```
 
-脚本会：
+OSS 私钥不能放入客户端；仅嵌入公钥与单独的解密口令。生成密文对象使用 `scripts/pack-client-config.py`。Chatwoot 需要 API Inbox identifier，不能把管理员令牌或 website token 填进该字段。
 
-- 生成 Tauri ed25519 密钥对 → 提示你把私钥粘到
-  `TAURI_SIGNING_PRIVATE_KEY`、密码粘到
-  `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`，**公钥**填进
-  [`desktop/src-tauri/tauri.conf.json`](desktop/src-tauri/tauri.conf.json)
-  → `plugins.updater.pubkey`
-- 生成 Android Release Keystore → 提示你把四个值贴进
-  `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、
-  `ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`
+## 2. Windows
 
-**这两份密钥务必离线备份**：丢了 Tauri 私钥老用户收不到桌面更新；丢了
-Android keystore 老用户必须卸载重装 APK。
+需要 Node.js 24、Rust stable（MSVC目标）、Python 3.10+、Visual Studio C++ Build Tools 和 Windows SDK。使用已配置 C++ 工具链的 Developer PowerShell。不要把安装脚本的退出码或目录存在当作工具链可用证明，先确认 `cargo --version` 与 `cl` 可执行。
 
-## 2. 提交本仓库到 GitHub
-
-如果 [`xboard-client/`](.) 还没有 git 历史，第一次推送：
-
-```sh
-cd xboard-client
-git init -b main
-git add .
-git commit -m "init: sufe-client first push"
-git remote add origin git@github.com:Shannon-x/sufe-client.git
-git push -u origin main
+```powershell
+python scripts/install-kernel.py --target x86_64-pc-windows-msvc
+cargo build -p xboard-svc
+Copy-Item -LiteralPath 'target/debug/xboard-svc.exe' -Destination 'desktop/src-tauri/binaries/xboard-svc-x86_64-pc-windows-msvc.exe'
+Set-Location desktop
+npm ci
+npm run build
+npm run tauri -- dev
 ```
 
-如果项目已经在 git 里只是换 remote：
+下载工具从官方 HTTPS 获取归档，先对比 `ci/checksums/` 固定 SHA256，再解压 mihomo/Wintun。它不会运行内核、安装服务或修改系统代理。**本版Windows/macOS禁用特权服务启动与TUN，使用系统代理**：特权服务对用户可写工作目录/配置的安全约束仍未完成。准备侧车是满足构建资源要求，不代表允许安装或启用该特权能力。
+
+构建可分发包前，把服务侧车换为 release 版本：从仓库根执行 `cargo build -p xboard-svc --release`，把 `target/release/xboard-svc.exe` 复制到相同侧车目标名，然后在 `desktop` 执行 `npm run tauri -- build`。Tauri updater 产物需要与配置公钥匹配的签名私钥。
+
+若设置了 `CARGO_TARGET_DIR`，复制路径应使用该目录；不要机械复制陈旧的 `target/` 产物。若 Rust/C工具链在中文路径中出现原生依赖问题，可使用指向本项目的英文目录 junction，并把临时编译产物放英文路径；原始源文件仍保持在本工作区。
+
+## 3. macOS 与 Linux
+
+macOS 需要 Xcode Command Line Tools，Linux 需要 WebKitGTK 4.1、GTK3、AppIndicator、OpenSSL、DBus 开发包和 pkg-config。Ubuntu 示例：
 
 ```sh
-git remote set-url origin git@github.com:Shannon-x/sufe-client.git
-git push -u origin main
+sudo apt-get install libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libdbus-1-dev pkg-config libcap2-bin
 ```
 
-## 3. GitHub 仓库一次性配置
-
-仓库 → Settings 里完成三件事：
-
-1. **Secrets and variables → Actions → New repository secret** — 把上面 6
-   个 secret 全部贴进去。
-
-2. **Actions → General → Workflow permissions** — 选 “Read and write
-   permissions”，否则 `publish-desktop-manifest` 没权限 push 到 gh-pages。
-
-3. **Pages → Build and deployment** — Source 选 “Deploy from a branch”，
-   分支选 `gh-pages`、目录 `/ (root)`。第一次没 gh-pages 分支也没关系，
-   release.yml 跑完会自动创建。
-
-## 4. 触发首次发布
+从根目录安装目标内核：
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0
+# Apple Silicon；Intel 使用 x86_64-apple-darwin
+python3 scripts/install-kernel.py --target aarch64-apple-darwin
+bash ci/scripts/install-helper-sidecar.sh release
+
+# Linux x86_64
+python3 scripts/install-kernel.py --target x86_64-unknown-linux-gnu
 ```
 
-一推 tag 同时触发两个 workflow：
+然后在 `desktop` 中执行 `npm ci`、`npm run build`、`npm run tauri -- build`。macOS helper 的架构必须与应用目标一致；跨编译可显式设置 `TARGET_TRIPLE`，但本版特权helper运行仍禁用。系统代理清理、macOS签名公证、Linux各桌面代理/TUN设置需在对应平台测试，Windows构建通过不替代这些测试。
 
-- [`Release Desktop`](.github/workflows/release.yml) — 矩阵跑
-  `aarch64-apple-darwin` / `x86_64-apple-darwin` /
-  `x86_64-pc-windows-msvc` / `x86_64-unknown-linux-gnu` 四个 target，
-  产物（`.dmg` / `.msi` / `.exe` / `.deb` / `.rpm` / `.AppImage`）+ 每个
-  bundle 的 `.sig` 上传到草稿 Release。末步 `publish-desktop-manifest`
-  把统一的 `latest.json` 提交到 gh-pages。
-- [`Release Mobile`](.github/workflows/mobile.yml) — 跨编 4 个 ABI 的
-  `libxboard_core.so` + 拉 mihomo 三架构二进制 + `assembleRelease` +
-  签名 → APK 上传到同一个 Release。
+## 4. Android 与 iOS
 
-第一次跑大概 25-40 分钟。GitHub Actions tab 里能看实时日志。
+Android 的确切 SDK、NDK、Gradle 和 UniFFI 流程见 [android/README.md](android/README.md)。先构建共享 Rust 原生库、生成绑定、安装已验证内核，再运行 `assembleDebug`；只有 Kotlin 编译通过仍不能证明 JNI打包与 VPN数据流可用。Release APK必须签名，缺少密钥时CI拒绝发布。
 
-## 5. 检查清单
+iOS见 [ios/README.md](ios/README.md)。当前使用 sing-box/Libbox兼容基线，不是mihomo。`ios/build-libbox.sh` 从固定源码commit构建框架，旧的不存在release下载链接已移除。需要macOS/Xcode、NetworkExtension签名配置、设备验收；不能通过“恢复旧CI片段”直接得到可发行客户端。
 
-跑完 workflow 后逐项确认：
+移动原生壳尚未具备桌面的全部礼品卡、邀请、Chatwoot、动态配置和验证码交互，不应宣传三端功能已完全一致。
 
-| 检查项 | URL / 命令 |
-|---|---|
-| 草稿 Release 包含 5+ 文件（dmg/msi/exe/deb/AppImage/apk） | https://github.com/Shannon-x/sufe-client/releases |
-| gh-pages 分支已经创建并含 `desktop/latest.json` | https://github.com/Shannon-x/sufe-client/tree/gh-pages |
-| Pages 站点能访问着陆页 | https://shannon-x.github.io/sufe-client/ |
-| Tauri updater manifest 能拉到 | `curl https://shannon-x.github.io/sufe-client/desktop/latest.json \| jq .` |
-| Android updater manifest 能拉到 | `curl https://shannon-x.github.io/sufe-client/mobile/android/latest.json \| jq .` |
-
-通过后回到 Release 页点 **Publish release**（草稿状态客户端的
-`releases/latest/download/...` 备份链接是空的，发布后才生效）。
-
-## 6. 用户首次安装的提示
-
-零付费方案的代价 — 系统会把没签名的安装包当成不可信来源：
-
-- **macOS** — 双击 `.dmg` 打开后，右键 `.app` → “打开” → 弹窗里再点
-  “打开”。只有第一次，之后就是普通应用。
-- **Windows** — `.msi` 双击会弹 SmartScreen“未知发布者”，点
-  “更多信息” → “仍要运行”。`.exe` 类似。
-- **Linux** — `deb` / `rpm` 没强制签名要求，正常 `apt install ./xxx.deb`
-  即可；AppImage `chmod +x && ./xxx.AppImage`。
-- **Android** — 启用“未知来源”一次后正常装。
-
-**重要** — 上述只发生在**首次**安装。一旦装上，自动更新走 Tauri 的
-ed25519 校验和 Android in-app updater 的 sha256 校验，路径全自动、不再
-弹窗。
-
-## 7. 下次发版
+## 5. 测试
 
 ```sh
-git tag v0.1.1
-git push origin v0.1.1
+cargo test -p xboard-core --lib
+cargo check -p xboard-desktop
+cd desktop
+npm run build
 ```
 
-无需再做任何配置 — 同一组 secret 永久复用。
+前端端到端测试配置与本次结果以 [交付记录](docs/delivery-status.md) 和任务最终验证记录为准。生产验收需要真实测试账号、有效订阅、支付渠道测试环境和Chatwoot inbox；不要用预览数据代替这些验收。
 
----
+## 6. GitHub发行流程
 
-## 出问题排查
+在确认仓库remote和发行目标后，由维护者创建版本tag触发草稿构建。当前workflow不在本地任务中推送或发布任何内容。
 
-| 现象 | 原因 / 修法 |
-|---|---|
-| `publish-desktop-manifest` 失败：`Permission denied (publickey)` | Settings → Actions → Workflow permissions 没改 “Read and write” |
-| Pages 404 | gh-pages 分支不存在；先跑一次 release.yml 让它创建 |
-| 客户端检查更新提示 “update signature is invalid” | tauri.conf.json 的 pubkey 和 secret 里的私钥不是一对；重生成 |
-| Android 安装提示 “应用未签名” | `ANDROID_KEYSTORE_BASE64` 没配，APK 是 unsigned 状态；补 secret 重新发版 |
-| Release.yml 卡在 mihomo 下载 | mihomo GitHub 限速；切到自建镜像或重试 |
-| Tag 推上去但 workflow 没跑 | tag 不是 `v*` 前缀（如 `release-1.0`），workflow 不会触发 |
+需要的配置：
 
-需要还原 iOS 端构建（等 99 美元开发者账号到位后），从 git 历史 revert
-对 [`.github/workflows/ci.yml`](.github/workflows/ci.yml) 和
-[`.github/workflows/mobile.yml`](.github/workflows/mobile.yml) 的 iOS 段
-删除即可。
+- `TAURI_SIGNING_PRIVATE_KEY` 与 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`，公钥填写 `desktop/src-tauri/tauri.conf.json` 的 updater配置。
+- `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`；Android脚本使用SDK原生 `zipalign` / `apksigner`。
+- 可选的 `SUFE_DEPLOYMENT_JSON` secret，用于桌面专属部署配置。
+- GitHub Actions写入release/gh-pages的权限；Pages选择gh-pages分支。
+
+tag构建只生成草稿Release。检查安装包、签名和平台验证后，由维护者发布草稿；`release.published` 事件才生成公开更新清单，避免客户端收到指向私有草稿资产的下载地址。桌面与Android清单发布共用并发组，避免同时覆盖gh-pages。桌面清单必须包含四个目标和签名，并额外附加为release的 `latest.json`，使备用updater URL可用。
+
+Android清单目前只作为分发元数据；客户端内自动升级逻辑没有交付。Tauri updater签名验证不等于Windows Authenticode或macOS公证，也不保证未来安装不会出现系统确认。iOS发行workflow仍未配置。
+
+换内核版本之前，先独立确认官方资产并更新 `ci/checksums/<version>.sha256`。没有固定hash的版本会失败，不允许去掉校验继续打包。
+
+内核下载默认 v1.19.30，Windows 默认 compatible。`--version v1.18.7` 保留旧版本复现能力，`--standard` 选择新版本标准 Windows 构建；两者只允许仓库已有固定 SHA256 的归档。`--cache-only` 不修改当前打包 sidecar。Bash CI 对应 `MIHOMO_WINDOWS_STANDARD=true` 可选标准 Windows 归档，默认 compatible。CI 中已有 `MIHOMO_VERSION` 仓库变量会覆盖工作流默认版本，运营方需同步检查该值。

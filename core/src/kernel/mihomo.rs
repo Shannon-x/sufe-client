@@ -56,7 +56,11 @@ impl MihomoDriver {
             // No global timeout: /traffic and /logs are long-lived chunked
             // streams. Per-call timeouts are applied in the methods that
             // use this client.
-            http: Client::builder().build().expect("reqwest client"),
+            http: Client::builder()
+                .no_proxy()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()
+                .expect("reqwest client"),
             log_tx,
             log_task: Mutex::new(None),
         }

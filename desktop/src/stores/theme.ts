@@ -5,15 +5,16 @@ const KEY = "xboard.theme";
 
 export const useThemeStore = defineStore("theme", () => {
   const initial = localStorage.getItem(KEY);
-  const dark = ref<boolean>(
-    initial === null
-      ? window.matchMedia("(prefers-color-scheme: dark)").matches
-      : initial === "dark",
-  );
+  const dark = ref<boolean>(initial === "dark");
 
-  watch(dark, (next) => {
-    localStorage.setItem(KEY, next ? "dark" : "light");
-  });
+  watch(
+    dark,
+    (next) => {
+      localStorage.setItem(KEY, next ? "dark" : "light");
+      document.documentElement.dataset.theme = next ? "dark" : "light";
+    },
+    { immediate: true },
+  );
 
   function toggle() {
     dark.value = !dark.value;

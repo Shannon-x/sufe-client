@@ -1,101 +1,40 @@
 #!/usr/bin/env bash
-# Drop mihomo binaries into desktop/src-tauri/binaries/ with the
-# target-triple suffix Tauri expects for `externalBin` resolution.
-#
-# Usage:
-#   ci/scripts/install-mihomo-sidecar.sh <version>           # current host triple
-#   ci/scripts/install-mihomo-sidecar.sh <version> --all      # all four desktop triples
-#
-# `<version>` is a mihomo Meta release tag, e.g. `v1.18.7`. The script
-# fetches the official archive from MetaCubeX/mihomo, extracts the binary,
-# strips it, and renames it for Tauri.
-#
-# This script is intentionally simple — replace the URL with your own CDN
-# mirror once the kernel-mirror CI workflow is wired up.
-
+# Download reviewed official sidecars. Python owns archive naming, checksum
+# validation and atomic extraction for local and CI builds alike.
+# Usage: install-mihomo-sidecar.sh [version] [--all]
 set -euo pipefail
-
-if [[ $# -lt 1 ]]; then
-    echo "usage: $0 <version> [--all]" >&2
-    exit 1
-fi
-
-VERSION="$1"
-shift || true
-MODE="host"
-if [[ "${1:-}" == "--all" ]]; then
-    MODE="all"
-fi
-
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-DEST="${REPO_ROOT}/desktop/src-tauri/binaries"
-mkdir -p "${DEST}"
-
-# Map host triple -> mihomo release artifact name (without .gz/.zip).
-mihomo_artifact() {
-    case "$1" in
-        x86_64-pc-windows-msvc)   echo "mihomo-windows-amd64-${VERSION}.zip" ;;
-        aarch64-apple-darwin)     echo "mihomo-darwin-arm64-${VERSION}.gz" ;;
-        x86_64-apple-darwin)      echo "mihomo-darwin-amd64-${VERSION}.gz" ;;
-        x86_64-unknown-linux-gnu) echo "mihomo-linux-amd64-${VERSION}.gz" ;;
-        *) echo "unsupported triple: $1" >&2; exit 2 ;;
-    esac
-}
+VERSION="${1:-$(cat "${REPO_ROOT}/ci/mihomo-version.txt")}"
+MODE="${2:-host}"
+case "${MODE}" in host|--all) ;; *) echo 'usage: install-mihomo-sidecar.sh [version] [--all]' >&2; exit 2 ;; esac
+PYTHON="${PYTHON:-python3}"
+command -v "${PYTHON}" >/dev/null || PYTHON=python
 
 host_triple() {
-    # Honor an explicit override so CI can cross-compile to a target that
-    # doesn't match the host (e.g. arm64 runner producing x86_64 build).
-    if [[ -n "${TARGET_TRIPLE:-}" ]]; then
-        echo "${TARGET_TRIPLE}"
-        return
-    fi
-    local arch os
-    arch="$(uname -m)"
-    os="$(uname -s)"
-    case "${os}-${arch}" in
-        Darwin-arm64)  echo "aarch64-apple-darwin" ;;
-        Darwin-x86_64) echo "x86_64-apple-darwin" ;;
-        Linux-x86_64)  echo "x86_64-unknown-linux-gnu" ;;
-        MINGW*-x86_64|MSYS*-x86_64) echo "x86_64-pc-windows-msvc" ;;
-        *) echo "unsupported host: ${os}-${arch}" >&2; exit 2 ;;
+    if [[ -n "${TARGET_TRIPLE:-}" ]]; then printf '%s\n' "${TARGET_TRIPLE}"; return; fi
+    case "$(uname -s)-$(uname -m)" in
+        Darwin-arm64) echo aarch64-apple-darwin ;;
+        Darwin-x86_64) echo x86_64-apple-darwin ;;
+        Linux-x86_64) echo x86_64-unknown-linux-gnu ;;
+        MINGW*-x86_64|MSYS*-x86_64) echo x86_64-pc-windows-msvc ;;
+        *) echo 'Unsupported host; set TARGET_TRIPLE explicitly' >&2; exit 2 ;;
     esac
 }
 
 install_one() {
     local triple="$1"
-    local artifact url tmp out
-    artifact="$(mihomo_artifact "${triple}")"
-    url="https://github.com/MetaCubeX/mihomo/releases/download/${VERSION}/${artifact}"
-    tmp="$(mktemp -d)"
-    out="${DEST}/mihomo-${triple}"
-    if [[ "${triple}" == *windows* ]]; then
-        out="${out}.exe"
+    local flags=()
+    if [[ "${triple}" == *windows* && "${MIHOMO_WINDOWS_STANDARD:-false}" == true ]] ||
+       [[ "${triple}" == *linux* && "${MIHOMO_LINUX_STANDARD:-false}" == true ]]; then
+        flags+=(--standard)
     fi
-
-    echo "→ ${triple}: ${url}"
-    curl -fsSL "${url}" -o "${tmp}/${artifact}"
-
-    case "${artifact}" in
-        *.gz)
-            gunzip -c "${tmp}/${artifact}" > "${out}"
-            ;;
-        *.zip)
-            unzip -p "${tmp}/${artifact}" >"${out}"
-            ;;
-        *)
-            cp "${tmp}/${artifact}" "${out}"
-            ;;
-    esac
-    chmod +x "${out}"
-    rm -rf "${tmp}"
-    echo "  installed → ${out}"
+    "${PYTHON}" "${REPO_ROOT}/scripts/install-kernel.py" --version "${VERSION}" --target "${triple}" "${flags[@]}"
 }
 
-if [[ "${MODE}" == "all" ]]; then
-    install_one x86_64-pc-windows-msvc
-    install_one aarch64-apple-darwin
-    install_one x86_64-apple-darwin
-    install_one x86_64-unknown-linux-gnu
+if [[ "${MODE}" == --all ]]; then
+    for triple in aarch64-apple-darwin x86_64-apple-darwin x86_64-pc-windows-msvc x86_64-unknown-linux-gnu; do
+        install_one "${triple}"
+    done
 else
     install_one "$(host_triple)"
 fi

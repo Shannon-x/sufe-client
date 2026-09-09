@@ -105,6 +105,21 @@ pub fn patch_singbox(
     if let Some(YamlValue::Sequence(groups)) =
         yaml_doc.get(YamlValue::String("proxy-groups".into()))
     {
+        // Register group names before translating their members. Subscription
+        // selectors commonly contain url-test groups declared later in YAML.
+        // Without this, every nested group was silently discarded.
+        for g in groups {
+            if let Some(map) = g.as_mapping() {
+                if matches!(
+                    ystr(map, "type"),
+                    Some("select" | "url-test" | "fallback" | "load-balance")
+                ) {
+                    if let Some(name) = ystr(map, "name") {
+                        accepted.insert(name.to_owned());
+                    }
+                }
+            }
+        }
         for g in groups {
             if let Some((tag, value)) = translate_group(g, &accepted) {
                 selector_targets.push(tag);
@@ -190,7 +205,8 @@ pub fn patch_singbox(
             "default_mode": "rule",
         },
         "cache_file": {
-            "enabled": false,
+            "enabled": true,
+            "path": "cache.db",
         },
     });
 

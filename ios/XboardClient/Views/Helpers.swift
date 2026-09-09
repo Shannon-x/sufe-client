@@ -37,13 +37,14 @@ extension View {
 }
 
 enum ProtonStyle {
-    static let background = Color(red: 0.08, green: 0.07, blue: 0.12)
-    static let panel = Color(red: 0.11, green: 0.09, blue: 0.16)
-    static let panelBorder = Color.white.opacity(0.09)
-    static let textMuted = Color(red: 0.75, green: 0.70, blue: 0.82)
-    static let accent = Color(red: 0.49, green: 0.36, blue: 1.00)
-    static let green = Color(red: 0.00, green: 0.82, blue: 0.61)
-    static let danger = Color(red: 1.00, green: 0.25, blue: 0.34)
+    static let background = Color(red: 246/255, green: 247/255, blue: 251/255)
+    static let panel = Color.white
+    static let panelBorder = Color(red: 235/255, green: 235/255, blue: 244/255)
+    static let text = Color(red: 36/255, green: 37/255, blue: 57/255)
+    static let textMuted = Color(red: 133/255, green: 134/255, blue: 151/255)
+    static let accent = Color(red: 113/255, green: 101/255, blue: 233/255)
+    static let green = Color(red: 39/255, green: 154/255, blue: 132/255)
+    static let danger = Color(red: 217/255, green: 82/255, blue: 112/255)
 }
 
 struct GeoPoint: Hashable {
@@ -161,4 +162,15 @@ func projectGeo(lat: Double, lon: Double) -> (x: Double, y: Double) {
     let merc = log(tan(Double.pi / 4 + latRad / 2))
     let y = min(94, max(6, ((1 - merc / Double.pi) / 2) * 100))
     return (x, y)
+}
+
+/// Display panel-authored HTML as text without a web view or remote resources.
+func plainPanelText(_ html: String) -> String {
+    var text = html.replacingOccurrences(of: "(?is)<(script|style)[^>]*>.*?</\\1>", with: "", options: .regularExpression)
+    text = text.replacingOccurrences(of: "(?i)<br\\s*/?>|</p>|</div>|</li>", with: "\n", options: .regularExpression)
+    text = text.replacingOccurrences(of: "<[^>]*>", with: "", options: .regularExpression)
+    for (entity, character) in [("&nbsp;", " "), ("&lt;", "<"), ("&gt;", ">"), ("&quot;", "\""), ("&#39;", "'"), ("&amp;", "&")] {
+        text = text.replacingOccurrences(of: entity, with: character)
+    }
+    return text.trimmingCharacters(in: .whitespacesAndNewlines)
 }

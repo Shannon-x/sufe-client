@@ -17,6 +17,7 @@
 //! gracefully (the in-memory bearer still works) — but during read they
 //! short-circuit hydrate to "no session".
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use parking_lot::RwLock;
@@ -30,20 +31,33 @@ use super::types::{
     Order, PaymentMethod, Plan, RegisterArgs, SaveOrderArgs, SaveTicketArgs, SiteConfig,
     SubscribeInfo, Ticket, TicketDetail, UserInfo,
 };
+use crate::api::deployment::{DeploymentDocument, FeatureFlags};
+use crate::api::runtime_config::{DeploymentRuntime, RuntimeConfig};
 use crate::api::{Captcha, HttpClient, LoginRequest, RegisterRequest};
+use crate::profile::custom_rules::{apply_custom_rules, validate_rules, CustomRule};
 use crate::storage::SecureStore as CoreSecureStore;
 
 /// Map the FFI's two legacy captcha slots (`turnstile` / `recaptcha`) onto
 /// the unified [`Captcha`] so the token reaches the field the backend's
 /// `CaptchaService` actually reads (`turnstile_token` / `recaptcha_data`).
-/// Mobile has no captcha widget yet (both slots are always `None` today);
-/// reCAPTCHA v3 support arrives with the mobile captcha UI — see segment 3,
-/// at which point these args gain an explicit `captcha_type`.
-fn legacy_captcha<'a>(turnstile: Option<&'a str>, recaptcha: Option<&'a str>) -> Captcha<'a> {
+/// The shared reCAPTCHA slot is interpreted with the current server provider;
+/// the mobile widgets generate a fresh v3 token at the time of each action.
+fn legacy_captcha<'a>(
+    turnstile: Option<&'a str>,
+    recaptcha: Option<&'a str>,
+    configured_type: Option<&str>,
+) -> Captcha<'a> {
     if let Some(t) = turnstile.filter(|s| !s.is_empty()) {
         Captcha::from_type(Some("turnstile"), Some(t))
     } else if let Some(r) = recaptcha.filter(|s| !s.is_empty()) {
-        Captcha::from_type(Some("recaptcha"), Some(r))
+        Captcha::from_type(
+            Some(if configured_type == Some("recaptcha-v3") {
+                "recaptcha-v3"
+            } else {
+                "recaptcha"
+            }),
+            Some(r),
+        )
     } else {
         Captcha::default()
     }
@@ -71,6 +85,8 @@ pub struct Client {
     /// Cheap-to-Clone — the heavy state (HTTP client, secure store) lives
     /// outside this lock.
     session: RwLock<Option<SessionSnapshot>>,
+    deployment: DeploymentRuntime,
+    session_generation: AtomicU64,
 }
 
 impl Client {
@@ -89,13 +105,45 @@ impl Client {
         locale: String,
         secure: Box<dyn SecureStore>,
     ) -> Result<Self, FfiError> {
-        let http = HttpClient::new(&backend_base_url, &locale)?;
+        let mut config = RuntimeConfig {
+            deployment: DeploymentDocument {
+                project_id: "sufe".into(),
+                brand_name: "SUFE".into(),
+                api_endpoints: vec![backend_base_url],
+                features: FeatureFlags::default(),
+                chatwoot_base_url: None,
+                chatwoot_inbox_identifier: None,
+                issued_at: 0,
+                expires_at: 0,
+            },
+            stealth_password: None,
+            middleware_turnstile_site_key: None,
+            oss: None,
+        };
+        config.deployment.validate()?;
+        Self::from_config(config, locale, secure)
+    }
+
+    /// Production constructor: one embedded config and one crypto implementation
+    /// shared by desktop, Android and iOS. Hosts cannot override trusted APIs.
+    pub fn for_deployment(locale: String, secure: Box<dyn SecureStore>) -> Result<Self, FfiError> {
+        Self::from_config(crate::api::runtime_config::load()?, locale, secure)
+    }
+
+    fn from_config(
+        config: RuntimeConfig,
+        locale: String,
+        secure: Box<dyn SecureStore>,
+    ) -> Result<Self, FfiError> {
+        let http = config.create_http(&locale)?;
         let secure: Arc<dyn CoreSecureStore> =
             Arc::new(CallbackSecureStore::new(Arc::from(secure)));
         Ok(Self {
             http,
             secure,
             session: RwLock::new(None),
+            deployment: DeploymentRuntime::new(config),
+            session_generation: AtomicU64::new(0),
         })
     }
 
@@ -153,17 +201,35 @@ impl Client {
 
     pub async fn check_login(&self) -> Result<bool, FfiError> {
         match self.http.check_login().await {
-            Ok(resp) => Ok(resp.is_login),
-            Err(crate::error::XboardError::Unauthorized) => Ok(false),
+            Ok(resp) if resp.is_login => Ok(true),
+            Ok(_) | Err(crate::error::XboardError::Unauthorized) => {
+                self.logout().await;
+                Ok(false)
+            }
             Err(e) => Err(e.into()),
         }
     }
 
     pub async fn login(&self, args: LoginArgs) -> Result<LoginSummary, FfiError> {
+        // Legacy FFI has one reCAPTCHA slot. Resolve its v2/v3 wire field
+        // from the trusted site configuration instead of guessing v2.
+        let captcha_site = if args
+            .recaptcha
+            .as_deref()
+            .is_some_and(|token| !token.is_empty())
+        {
+            Some(self.fetch_site_config().await?)
+        } else {
+            None
+        };
         let req = LoginRequest {
             email: &args.email,
             password: &args.password,
-            captcha: legacy_captcha(args.turnstile.as_deref(), args.recaptcha.as_deref()),
+            captcha: legacy_captcha(
+                args.turnstile.as_deref(),
+                args.recaptcha.as_deref(),
+                captcha_site.as_ref().map(|site| site.captcha_type.as_str()),
+            ),
         };
         let auth = self.http.login(&req).await?;
         self.persist_session(&args.email, &auth).await?;
@@ -171,12 +237,27 @@ impl Client {
     }
 
     pub async fn register(&self, args: RegisterArgs) -> Result<LoginSummary, FfiError> {
+        // Legacy FFI has one reCAPTCHA slot. Resolve its v2/v3 wire field
+        // from the trusted site configuration instead of guessing v2.
+        let captcha_site = if args
+            .recaptcha
+            .as_deref()
+            .is_some_and(|token| !token.is_empty())
+        {
+            Some(self.fetch_site_config().await?)
+        } else {
+            None
+        };
         let req = RegisterRequest {
             email: &args.email,
             password: &args.password,
             email_code: &args.email_code,
             invite_code: args.invite_code.as_deref(),
-            captcha: legacy_captcha(args.turnstile.as_deref(), args.recaptcha.as_deref()),
+            captcha: legacy_captcha(
+                args.turnstile.as_deref(),
+                args.recaptcha.as_deref(),
+                captcha_site.as_ref().map(|site| site.captcha_type.as_str()),
+            ),
         };
         let auth = self.http.register(&req).await?;
         self.persist_session(&args.email, &auth).await?;
@@ -188,24 +269,38 @@ impl Client {
         email: String,
         captcha_token: Option<String>,
     ) -> Result<(), FfiError> {
-        // No type hint on the FFI surface yet — treat the token as v2
-        // reCAPTCHA (the historical default). Mobile passes None today.
+        let site = self.fetch_site_config().await?;
         self.http
             .send_email_verify(
                 &email,
-                Captcha::from_type(Some("recaptcha"), captcha_token.as_deref()),
+                Captcha::from_type(Some(&site.captcha_type), captcha_token.as_deref()),
             )
             .await?;
         Ok(())
     }
 
     pub async fn forget_password(&self, args: ForgetPasswordArgs) -> Result<(), FfiError> {
+        // Legacy FFI has one reCAPTCHA slot. Resolve its v2/v3 wire field
+        // from the trusted site configuration instead of guessing v2.
+        let captcha_site = if args
+            .recaptcha
+            .as_deref()
+            .is_some_and(|token| !token.is_empty())
+        {
+            Some(self.fetch_site_config().await?)
+        } else {
+            None
+        };
         self.http
             .forget_password(
                 &args.email,
                 &args.password,
                 &args.email_code,
-                legacy_captcha(args.turnstile.as_deref(), args.recaptcha.as_deref()),
+                legacy_captcha(
+                    args.turnstile.as_deref(),
+                    args.recaptcha.as_deref(),
+                    captcha_site.as_ref().map(|site| site.captcha_type.as_str()),
+                ),
             )
             .await?;
         Ok(())
@@ -215,6 +310,7 @@ impl Client {
     /// but never surfaced to the host (the UDL marks this method as not
     /// throwing).
     pub async fn logout(&self) {
+        self.session_generation.fetch_add(1, Ordering::SeqCst);
         self.http.set_bearer(None);
         *self.session.write() = None;
         let secure = self.secure.clone();
@@ -226,7 +322,11 @@ impl Client {
     // -- Site / user / subscribe ------------------------------------------
 
     pub async fn fetch_site_config(&self) -> Result<SiteConfig, FfiError> {
-        Ok(self.http.site_config().await?.into())
+        self.deployment.refresh(&self.http).await?;
+        Ok(self
+            .deployment
+            .apply_captcha(self.http.site_config().await?)?
+            .into())
     }
 
     pub async fn current_user(&self) -> Result<UserInfo, FfiError> {
@@ -240,6 +340,7 @@ impl Client {
     // -- Notices / plans / payment ----------------------------------------
 
     pub async fn fetch_notices(&self) -> Result<Vec<Notice>, FfiError> {
+        self.require_feature(|f| f.notice).await?;
         let raw = self.http.fetch_notices().await?;
         Ok(raw.into_iter().map(Notice::from).collect())
     }
@@ -257,6 +358,7 @@ impl Client {
     // -- Orders ------------------------------------------------------------
 
     pub async fn save_order(&self, args: SaveOrderArgs) -> Result<String, FfiError> {
+        self.require_feature(|f| f.purchase).await?;
         Ok(self
             .http
             .save_order(args.plan_id, &args.period, args.coupon_code.as_deref())
@@ -268,14 +370,20 @@ impl Client {
         trade_no: String,
         method_id: i64,
     ) -> Result<CheckoutResponse, FfiError> {
+        self.require_session()?;
+        validate_trade_no(&trade_no)?;
         Ok(self.http.checkout_order(&trade_no, method_id).await?.into())
     }
 
     pub async fn check_order(&self, trade_no: String) -> Result<i32, FfiError> {
+        self.require_session()?;
+        validate_trade_no(&trade_no)?;
         Ok(self.http.check_order(&trade_no).await?)
     }
 
     pub async fn cancel_order(&self, trade_no: String) -> Result<(), FfiError> {
+        self.require_session()?;
+        validate_trade_no(&trade_no)?;
         self.http.cancel_order(&trade_no).await?;
         Ok(())
     }
@@ -290,35 +398,191 @@ impl Client {
         code: String,
         plan_id: i64,
     ) -> Result<CouponCheckResult, FfiError> {
+        self.require_feature(|f| f.purchase).await?;
         Ok(self.http.check_coupon(&code, plan_id).await?.into())
     }
 
     // -- Tickets -----------------------------------------------------------
 
     pub async fn fetch_tickets(&self) -> Result<Vec<Ticket>, FfiError> {
+        self.require_feature(|f| f.tickets).await?;
         let raw = self.http.fetch_tickets().await?;
         Ok(raw.into_iter().map(Ticket::from).collect())
     }
 
     pub async fn fetch_ticket(&self, id: i64) -> Result<TicketDetail, FfiError> {
+        self.require_feature(|f| f.tickets).await?;
         Ok(self.http.fetch_ticket(id).await?.into())
     }
 
     pub async fn reply_ticket(&self, id: i64, message: String) -> Result<(), FfiError> {
+        self.require_feature(|f| f.tickets).await?;
         self.http.reply_ticket(id, &message).await?;
         Ok(())
     }
 
     pub async fn close_ticket(&self, id: i64) -> Result<(), FfiError> {
+        self.require_feature(|f| f.tickets).await?;
         self.http.close_ticket(id).await?;
         Ok(())
     }
 
     pub async fn save_ticket(&self, args: SaveTicketArgs) -> Result<Option<i64>, FfiError> {
+        self.require_feature(|f| f.tickets).await?;
         Ok(self
             .http
             .save_ticket(&args.subject, args.level, &args.message)
             .await?)
+    }
+
+    // -- Shared deployment and account extensions --------------------------
+
+    pub async fn fetch_client_config_json(&self) -> Result<String, FfiError> {
+        self.deployment.refresh(&self.http).await?;
+        to_json(&self.deployment.snapshot())
+    }
+
+    pub async fn gift_card_check_json(&self, code: String) -> Result<String, FfiError> {
+        self.require_feature(|f| f.gift_card).await?;
+        to_json(&self.http.gift_card_check(&code).await?)
+    }
+    pub async fn gift_card_redeem_json(&self, code: String) -> Result<String, FfiError> {
+        self.require_feature(|f| f.gift_card).await?;
+        to_json(&self.http.gift_card_redeem(&code).await?)
+    }
+    pub async fn gift_card_history_json(&self, page: i64) -> Result<String, FfiError> {
+        self.require_feature(|f| f.gift_card).await?;
+        to_json(&self.http.gift_card_history_page(page).await?)
+    }
+    pub async fn fetch_invites_json(&self) -> Result<String, FfiError> {
+        self.require_feature(|f| f.invite).await?;
+        to_json(&self.http.fetch_invites().await?)
+    }
+    pub async fn create_invite(&self, code: Option<String>) -> Result<bool, FfiError> {
+        self.require_feature(|f| f.invite).await?;
+        Ok(self.http.create_invite(code.as_deref()).await?)
+    }
+    pub async fn fetch_order_json(&self, trade_no: String) -> Result<String, FfiError> {
+        self.require_session()?;
+        validate_trade_no(&trade_no)?;
+        let order: serde_json::Value = self
+            .http
+            .get_json(&format!("/api/v1/user/order/detail?trade_no={trade_no}"))
+            .await?;
+        to_json(&order)
+    }
+    pub async fn check_coupon_for_period_json(
+        &self,
+        code: String,
+        plan_id: i64,
+        period: String,
+    ) -> Result<String, FfiError> {
+        self.require_feature(|f| f.purchase).await?;
+        to_json(
+            &self
+                .http
+                .check_coupon_with_period(&code, plan_id, Some(&period))
+                .await?,
+        )
+    }
+    pub async fn custom_rules_json(&self) -> Result<String, FfiError> {
+        self.require_feature(|f| f.custom_rules).await?;
+        to_json(&self.rules_for_connection().await?)
+    }
+    pub async fn save_custom_rules_json(&self, json: String) -> Result<(), FfiError> {
+        self.require_feature(|f| f.custom_rules).await?;
+        let rules = decode_custom_rules(&json)?;
+        let key = self.rules_storage_key()?;
+        blocking_put(&self.secure, &key, &to_json(&rules)?).await
+    }
+    pub async fn apply_custom_rules_yaml(
+        &self,
+        subscribe_yaml: String,
+    ) -> Result<String, FfiError> {
+        if subscribe_yaml.len() > 16 * 1024 * 1024 {
+            return Err(FfiError::Config("订阅内容过大".into()));
+        }
+        Ok(apply_custom_rules(
+            &subscribe_yaml,
+            &self.rules_for_connection().await?,
+        )?)
+    }
+    pub async fn support_request_json(
+        &self,
+        action: String,
+        conversation_id: Option<u64>,
+        content: Option<String>,
+    ) -> Result<String, FfiError> {
+        self.require_feature(|f| f.chatwoot).await?;
+        let email = self
+            .session
+            .read()
+            .as_ref()
+            .ok_or(FfiError::Unauthorized)?
+            .email
+            .clone();
+        let config = self.deployment.snapshot();
+        to_json(
+            &crate::api::support::request(
+                &config,
+                &self.http.backend_base_url().to_string(),
+                &email,
+                Some(self.secure.clone()),
+                &action,
+                conversation_id,
+                content,
+            )
+            .await?,
+        )
+    }
+
+    pub(crate) fn require_session(&self) -> Result<(), FfiError> {
+        if self.session.read().is_none() {
+            Err(FfiError::Unauthorized)
+        } else {
+            Ok(())
+        }
+    }
+    pub(crate) fn generation(&self) -> u64 {
+        self.session_generation.load(Ordering::SeqCst)
+    }
+    pub(crate) async fn rules_for_connection(&self) -> Result<Vec<CustomRule>, FfiError> {
+        self.require_session()?;
+        self.deployment.refresh(&self.http).await?;
+        if !self.deployment.snapshot().features.custom_rules {
+            return Ok(Vec::new());
+        }
+        let key = self.rules_storage_key()?;
+        match blocking_get(&self.secure, &key).await? {
+            Some(json) => decode_custom_rules(&json),
+            None => Ok(Vec::new()),
+        }
+    }
+    fn rules_storage_key(&self) -> Result<String, FfiError> {
+        let email = self
+            .session
+            .read()
+            .as_ref()
+            .ok_or(FfiError::Unauthorized)?
+            .email
+            .clone();
+        Ok(format!(
+            "custom-rules:{}:{email}",
+            self.http.backend_base_url()
+        ))
+    }
+    async fn require_feature(
+        &self,
+        select: impl FnOnce(&FeatureFlags) -> bool,
+    ) -> Result<(), FfiError> {
+        self.require_session()?;
+        self.deployment.refresh(&self.http).await?;
+        self.require_session()?;
+        if select(&self.deployment.snapshot().features) {
+            Ok(())
+        } else {
+            Err(FfiError::Config("此功能暂未开放".into()))
+        }
     }
 
     // -- Internal helpers --------------------------------------------------
@@ -331,6 +595,7 @@ impl Client {
         email: &str,
         auth: &crate::api::AuthResult,
     ) -> Result<(), FfiError> {
+        self.session_generation.fetch_add(1, Ordering::SeqCst);
         self.http
             .set_bearer(Some(SecretString::from(auth.auth_data.clone())));
 
@@ -395,4 +660,180 @@ async fn blocking_delete(store: &Arc<dyn CoreSecureStore>, key: &str) -> Result<
         .await
         .map_err(|e| FfiError::Config(format!("spawn_blocking: {e}")))?
         .map_err(FfiError::from)
+}
+
+fn to_json(value: &impl Serialize) -> Result<String, FfiError> {
+    serde_json::to_string(value).map_err(|e| FfiError::Json(e.to_string()))
+}
+fn validate_trade_no(value: &str) -> Result<(), FfiError> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err(FfiError::Config("订单编号无效".into()));
+    }
+    Ok(())
+}
+fn decode_custom_rules(json: &str) -> Result<Vec<CustomRule>, FfiError> {
+    if json.len() > 256 * 1024 {
+        return Err(FfiError::Config("自定义规则文件过大".into()));
+    }
+    let rules: Vec<CustomRule> =
+        serde_json::from_str(json).map_err(|_| FfiError::Config("自定义规则格式无效".into()))?;
+    validate_rules(&rules)?;
+    Ok(rules)
+}
+
+#[cfg(test)]
+mod extension_tests {
+    use super::super::errors::StorageError;
+    use super::*;
+    use std::collections::HashMap;
+
+    #[derive(Debug, Default)]
+    struct MemoryStore(parking_lot::Mutex<HashMap<String, String>>);
+    impl SecureStore for MemoryStore {
+        fn get(&self, key: String) -> Result<Option<String>, StorageError> {
+            Ok(self.0.lock().get(&key).cloned())
+        }
+        fn put(&self, key: String, value: String) -> Result<(), StorageError> {
+            self.0.lock().insert(key, value);
+            Ok(())
+        }
+        fn delete(&self, key: String) -> Result<(), StorageError> {
+            self.0.lock().remove(&key);
+            Ok(())
+        }
+    }
+    fn client(authenticated: bool, rules_enabled: bool) -> Client {
+        let mut flags = FeatureFlags::default();
+        flags.custom_rules = rules_enabled;
+        let config = RuntimeConfig {
+            deployment: DeploymentDocument {
+                project_id: "tests".into(),
+                brand_name: "Tests".into(),
+                api_endpoints: vec!["https://example.invalid".into()],
+                features: flags,
+                chatwoot_base_url: None,
+                chatwoot_inbox_identifier: None,
+                issued_at: 0,
+                expires_at: 0,
+            },
+            stealth_password: None,
+            middleware_turnstile_site_key: None,
+            oss: None,
+        };
+        let client =
+            Client::from_config(config, "zh-CN".into(), Box::new(MemoryStore::default())).unwrap();
+        if authenticated {
+            *client.session.write() = Some(SessionSnapshot {
+                email: "a@example.invalid".into(),
+                is_admin: false,
+                subscribe_token: "fixture".into(),
+                backend_host: client.http.backend_host(),
+            });
+        }
+        client
+    }
+    fn rules() -> String {
+        r#"[{"id":"one","kind":"DOMAIN-SUFFIX","value":"example.com","target":"DIRECT","enabled":true}]"#.into()
+    }
+    #[tokio::test]
+    async fn extension_operations_reject_missing_session_before_network() {
+        let client = client(false, true);
+        assert!(matches!(
+            client.gift_card_check_json("fixture".into()).await,
+            Err(FfiError::Unauthorized)
+        ));
+        assert!(matches!(
+            client.save_custom_rules_json(rules()).await,
+            Err(FfiError::Unauthorized)
+        ));
+    }
+    #[tokio::test]
+    async fn saved_rules_roundtrip_apply_and_do_not_cross_accounts() {
+        let client = client(true, true);
+        client.save_custom_rules_json(rules()).await.unwrap();
+        let saved = client.custom_rules_json().await.unwrap();
+        assert_eq!(
+            decode_custom_rules(&saved).unwrap(),
+            decode_custom_rules(&rules()).unwrap()
+        );
+        let output = client
+            .apply_custom_rules_yaml("rules:\n  - MATCH,DIRECT\n".into())
+            .await
+            .unwrap();
+        let parsed: serde_yaml::Value = serde_yaml::from_str(&output).unwrap();
+        assert_eq!(
+            parsed["rules"][0].as_str(),
+            Some("DOMAIN-SUFFIX,example.com,DIRECT")
+        );
+        assert!(client
+            .save_custom_rules_json(rules().replace("example.com", "example.com,DIRECT"))
+            .await
+            .is_err());
+        assert_eq!(client.custom_rules_json().await.unwrap(), saved);
+        client.session.write().as_mut().unwrap().email = "b@example.invalid".into();
+        assert_eq!(client.custom_rules_json().await.unwrap(), "[]");
+    }
+    #[tokio::test]
+    async fn disabled_rules_reject_edits_and_do_not_change_subscription() {
+        let client = client(true, false);
+        assert!(matches!(
+            client.save_custom_rules_json(rules()).await,
+            Err(FfiError::Config(_))
+        ));
+        let yaml = "rules: [MATCH,DIRECT]";
+        assert_eq!(
+            client.apply_custom_rules_yaml(yaml.into()).await.unwrap(),
+            yaml
+        );
+    }
+    #[tokio::test]
+    async fn logout_invalidates_pending_native_work() {
+        let client = client(true, true);
+        let before = client.generation();
+        client.logout().await;
+        assert_ne!(before, client.generation());
+        assert!(matches!(
+            client.require_session(),
+            Err(FfiError::Unauthorized)
+        ));
+    }
+    #[test]
+    fn legacy_mobile_captcha_routes_v3_to_the_backend_v3_field() {
+        let value =
+            serde_json::to_value(legacy_captcha(None, Some("v3-token"), Some("recaptcha-v3")))
+                .unwrap();
+        assert_eq!(value, serde_json::json!({"recaptcha_v3_token":"v3-token"}));
+        assert_eq!(
+            serde_json::to_value(legacy_captcha(None, Some("v2-token"), Some("recaptcha")))
+                .unwrap(),
+            serde_json::json!({"recaptcha_data":"v2-token"})
+        );
+        assert_eq!(
+            serde_json::to_value(legacy_captcha(
+                Some("turnstile-token"),
+                None,
+                Some("turnstile")
+            ))
+            .unwrap(),
+            serde_json::json!({"turnstile_token":"turnstile-token"})
+        );
+    }
+    #[test]
+    fn order_identifier_cannot_inject_query_or_path() {
+        assert!(validate_trade_no("20260910-order_123").is_ok());
+        for input in [
+            "",
+            "../admin",
+            "abc&trade_no=other",
+            "id?other",
+            "id\nother",
+        ] {
+            assert!(validate_trade_no(input).is_err());
+        }
+    }
 }

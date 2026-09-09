@@ -68,10 +68,7 @@ fun ConnectScreen(
 
             StatusCaption(state = ui.state, errorMessage = ui.errorMessage)
 
-            ModeSwitch(
-                current = ui.mode,
-                onPick = { viewModel.setMode(it) },
-            )
+            Text("VPN 隧道 · 覆盖设备网络", color = MaterialTheme.colorScheme.onSurfaceVariant)
 
             CurrentNodeRow(
                 nodeName = ui.selectedNode,
@@ -92,9 +89,7 @@ fun ConnectScreen(
             }
 
             Spacer(Modifier.height(8.dp))
-            TextButton(onClick = { /* logs view reserved */ }) {
-                Text(stringResource(R.string.connect_view_logs))
-            }
+            Text("连接状态与通知由 Android 系统 VPN 服务同步管理", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 

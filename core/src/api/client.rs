@@ -6,7 +6,6 @@
 
 use bytes::Bytes;
 use reqwest::header::IF_NONE_MATCH;
-use url::Url;
 
 use super::HttpClient;
 use crate::error::{Result, XboardError};
@@ -30,14 +29,17 @@ impl HttpClient {
         flag: &str,
         if_none_match: Option<&str>,
     ) -> Result<SubscribeFetch> {
-        let mut url = Url::parse(subscribe_url)?;
+        let mut url = super::deployment::validate_https_url(subscribe_url)?;
         url.query_pairs_mut().append_pair("flag", flag);
 
         let mut req = self.raw().get(url);
         if let Some(etag) = if_none_match {
             req = req.header(IF_NONE_MATCH, etag);
         }
-        let resp = req.send().await?;
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| XboardError::Network(e.without_url()))?;
         let status = resp.status().as_u16();
         // 304 (not modified) is a valid "use your cache" answer. Anything
         // >= 400 means the backend refused to hand out a subscription —
@@ -46,7 +48,7 @@ impl HttpClient {
         // empty body to the on-disk cache and never spin up the kernel over
         // an empty config (which used to manifest as a fake "connected"
         // state with no working egress).
-        if status >= 400 {
+        if status != 200 && status != 304 {
             return Err(XboardError::SubscriptionUnavailable { status });
         }
         let etag = resp
@@ -59,7 +61,10 @@ impl HttpClient {
             .get("subscription-userinfo")
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
-        let body = resp.bytes().await?;
+        let body = Bytes::from(super::deployment::bounded_body(resp, 16 * 1024 * 1024).await?);
+        if status == 200 && body.is_empty() {
+            return Err(XboardError::SubscriptionUnavailable { status });
+        }
         Ok(SubscribeFetch {
             body,
             etag,

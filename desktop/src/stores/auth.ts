@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref } from "vue";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen } from "@/platform";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { api } from "@/api";
 import type { LoginSummary, SubscribeInfo, UserInfo } from "@/types";
 
@@ -17,32 +18,48 @@ export const useAuthStore = defineStore("auth", () => {
   // when a valid snapshot is sitting on disk.
   const bootstrapping = ref(true);
   let unlistenExpired: UnlistenFn | null = null;
+  let generation = 0;
+  let userRequest = 0;
+  let subscribeRequest = 0;
+  let bootstrapRequest: Promise<void> | null = null;
 
-  async function bootstrap() {
+  function clearSession() {
+    generation++;
+    session.value = null;
+    userInfo.value = null;
+    subscribe.value = null;
+  }
+
+  function bootstrap(): Promise<void> {
+    if (bootstrapRequest) return bootstrapRequest;
+    bootstrapRequest = restore();
+    return bootstrapRequest;
+  }
+
+  async function restore() {
+    const version = generation;
     // Always listen for the backend's expiry signal — covers both the
     // explicit `logout` command and the `check_login → unauthorized`
     // path. The backend wipes its own state before emitting; we just
     // mirror that on the frontend.
+    try {
     if (!unlistenExpired) {
       unlistenExpired = await listen("xboard://session-expired", () => {
-        session.value = null;
-        userInfo.value = null;
-        subscribe.value = null;
+        clearSession();
       });
     }
 
-    try {
       const restored = await api.hydrateSession();
+      if (version !== generation) return;
       if (restored) {
         session.value = restored;
         // Revalidate the restored session. If the bearer is dead the
         // backend will emit `session-expired`, which our listener handles.
-        // On IPC failure we default to `false` (logged out) so the router
-        // guard kicks the user back to /login instead of stranding them
-        // on a broken Home with stale state.
-        const ok = await api.checkLogin().catch(() => false);
-        if (!ok) {
-          session.value = null;
+        // A transport failure is not evidence that the bearer was revoked.
+        const ok = await api.checkLogin().catch(() => null);
+        if (version !== generation) return;
+        if (ok === false) {
+          clearSession();
         } else {
           await Promise.all([
             refreshUser().catch(() => {}),
@@ -50,6 +67,9 @@ export const useAuthStore = defineStore("auth", () => {
           ]);
         }
       }
+    } catch {
+      // Native IPC unavailable on a plain browser; release the loading veil.
+      // A restored session is retained on transient transport failures.
     } finally {
       bootstrapping.value = false;
     }
@@ -61,9 +81,14 @@ export const useAuthStore = defineStore("auth", () => {
     captchaType?: string;
     captchaToken?: string;
   }) {
+    const version = ++generation;
     const summary = await api.login(args);
+    if (version !== generation) throw new Error("登录状态已变化，请重试。");
+    userInfo.value = null;
+    subscribe.value = null;
     session.value = summary;
     await Promise.allSettled([refreshUser(), refreshSubscribe()]);
+    if (version !== generation) throw new Error("登录已失效，请重新登录。");
     return summary;
   }
 
@@ -75,27 +100,37 @@ export const useAuthStore = defineStore("auth", () => {
     captchaType?: string;
     captchaToken?: string;
   }) {
+    const version = ++generation;
     const summary = await api.register(args);
+    if (version !== generation) throw new Error("登录状态已变化，请重试。");
+    userInfo.value = null;
+    subscribe.value = null;
     session.value = summary;
     await Promise.allSettled([refreshUser(), refreshSubscribe()]);
+    if (version !== generation) throw new Error("登录已失效，请重新登录。");
     return summary;
   }
 
   async function refreshUser() {
-    userInfo.value = await api.currentUser();
+    if (!session.value) return;
+    const version = generation, request = ++userRequest;
+    const value = await api.currentUser();
+    if (version === generation && request === userRequest && session.value) userInfo.value = value;
   }
 
   async function refreshSubscribe() {
-    subscribe.value = await api.currentSubscribe();
+    if (!session.value) return;
+    const version = generation, request = ++subscribeRequest;
+    const value = await api.currentSubscribe();
+    if (version === generation && request === subscribeRequest && session.value) subscribe.value = value;
   }
 
   async function logout() {
+    const version = ++generation;
     await api.logout();
     // The backend emits `session-expired`, but clear synchronously too so
     // the next render doesn't briefly show stale info.
-    session.value = null;
-    userInfo.value = null;
-    subscribe.value = null;
+    if (version === generation) clearSession();
   }
 
   return {

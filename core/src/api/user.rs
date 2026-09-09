@@ -20,6 +20,10 @@ pub struct CheckLoginResp {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UserInfo {
     pub email: String,
+    #[serde(default, deserialize_with = "de_truthy")]
+    pub banned: bool,
+    #[serde(default)]
+    pub transfer_enable: Option<u64>,
     /// Cents.
     #[serde(default)]
     pub balance: i64,

@@ -1,0 +1,106 @@
+name: Build Desktop Artifacts
+
+# A build branch and manual runs produce reviewable files only. No Release,
+# updater manifest, signing secret, or write token is required.
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/tun-native-build]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-artifacts-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: 'true'
+  SUFE_DEPLOYMENT_JSON: ${{ secrets.SUFE_DEPLOYMENT_JSON }}
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-14
+            bundles: app,dmg
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            bundles: app,dmg
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            bundles: deb,appimage
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read reviewed kernel version
+        shell: bash
+        run: |
+          version="$(cat ci/mihomo-version.txt)"
+          test -s "ci/checksums/${version}.sha256"
+          printf 'MIHOMO_VERSION=%s\n' "$version" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install Linux packaging and smoke-test dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev \
+            libayatana-appindicator3-dev librsvg2-dev libssl-dev libdbus-1-dev \
+            libcap2-bin iproute2 libfuse2 patchelf xdg-utils file desktop-file-utils \
+            xvfb xauth dbus-x11
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+          key: desktop-artifacts-${{ matrix.target }}
+      - name: Install frontend dependencies
+        working-directory: desktop
+        run: npm ci --no-audit --fund=false
+      - name: Test pinned downloads and Linux installation decisions
+        shell: bash
+        run: python3 -m unittest discover -s scripts/tests -v
+      - name: Download and verify official kernel
+        shell: bash
+        env:
+          TARGET_TRIPLE: ${{ matrix.target }}
+        run: bash ci/scripts/install-mihomo-sidecar.sh "$MIHOMO_VERSION"
+      - name: Build matching macOS helper
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          TARGET_TRIPLE: ${{ matrix.target }}
+        run: bash ci/scripts/install-helper-sidecar.sh release
+      - name: Build native bundles without updater signatures
+        working-directory: desktop
+        shell: bash
+        run: npm run tauri build -- --ci --target '${{ matrix.target }}' --bundles '${{ matrix.bundles }}' --config src-tauri/tauri.artifacts.conf.json -- --locked
+      - name: Verify bundle contents and prepare artifacts
+        shell: bash
+        run: bash ci/scripts/verify-desktop-bundles.sh '${{ matrix.target }}'
+      - name: Test native Linux capability and TUN readiness gates
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          cargo test --locked --release -p xboard-core --target '${{ matrix.target }}' --lib kernel::launcher::linux_caps
+          cargo test --locked --release -p xboard-desktop --target '${{ matrix.target }}' --lib linux_launcher::tests
+      - name: Upload packages and verification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sufe-${{ matrix.target }}-${{ github.run_number }}
+          path: artifacts/desktop/${{ matrix.target }}/
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0

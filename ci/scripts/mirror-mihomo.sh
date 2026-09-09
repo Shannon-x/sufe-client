@@ -14,7 +14,7 @@
 # Usage:
 #   ci/scripts/mirror-mihomo.sh <version>
 #
-# `<version>` is a mihomo Meta release tag, e.g. `v1.18.7`. The script
+# `<version>` is a mihomo Meta release tag, e.g. `v1.19.30`. The script
 # downloads all four desktop targets, decompresses them, computes SHA-256
 # digests, and writes:
 #
@@ -41,6 +41,7 @@ case "${VERSION}" in
 esac
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+source "${REPO_ROOT}/ci/scripts/verify-download.sh"
 OUT_DIR="${REPO_ROOT}/dist/mirror/${VERSION}"
 mkdir -p "${OUT_DIR}"
 
@@ -53,10 +54,14 @@ TRIPLES=(
 
 mihomo_artifact() {
     case "$1" in
-        x86_64-pc-windows-msvc)   echo "mihomo-windows-amd64-${VERSION}.zip" ;;
+        x86_64-pc-windows-msvc)
+            if [[ "${VERSION}" == v1.18.7 ]]; then echo "mihomo-windows-amd64-${VERSION}.zip";
+            else echo "mihomo-windows-amd64-compatible-${VERSION}.zip"; fi ;;
         aarch64-apple-darwin)     echo "mihomo-darwin-arm64-${VERSION}.gz" ;;
         x86_64-apple-darwin)      echo "mihomo-darwin-amd64-${VERSION}.gz" ;;
-        x86_64-unknown-linux-gnu) echo "mihomo-linux-amd64-${VERSION}.gz" ;;
+        x86_64-unknown-linux-gnu)
+            if [[ "${VERSION}" == v1.18.7 ]]; then echo "mihomo-linux-amd64-${VERSION}.gz";
+            else echo "mihomo-linux-amd64-compatible-${VERSION}.gz"; fi ;;
         *) echo "unsupported triple: $1" >&2; exit 2 ;;
     esac
 }
@@ -83,6 +88,7 @@ for triple in "${TRIPLES[@]}"; do
     tmp="$(mktemp -d)"
     trap 'rm -rf "${tmp}"' EXIT
     curl -fsSL "${url}" -o "${tmp}/${artifact}"
+    verify_download "${VERSION}" "${artifact}" "${tmp}/${artifact}"
 
     case "${artifact}" in
         *.gz)  gunzip -c "${tmp}/${artifact}" > "${OUT_DIR}/${out}" ;;

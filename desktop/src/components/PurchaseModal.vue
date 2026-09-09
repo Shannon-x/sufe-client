@@ -1,1119 +1,833 @@
 <script setup lang="ts">
-// Purchase modal — drives a state machine across the
-// save_order → checkout_order → check_order pipeline.
-//
-//   "select"   — pick payment method (+ optional coupon), confirm.
-//                Coupon code is debounce-validated against /coupon/check
-//                so the user sees the discount before they commit.
-//   "pending"  — checkout returned a QR code / redirect URL.
-//                A 4s interval polls /order/check_order so the user
-//                doesn't have to manually refresh after paying in
-//                Alipay / WeChat. The window 'focus' event also pokes
-//                a one-shot check so tabbing back from the browser
-//                feels instant.
-//   "settled"  — backend reported a terminal status. Emit 'done',
-//                auto-close shortly after.
-//   "failed"   — gateway reported cancelled / refunded mid-pay.
-//                User gets a "Retry payment" button.
-//
-// B-07: if save_order rejects with "你已有未付款订单" we don't just
-// surface the raw error — we pop a confirmation dialog asking the user
-// whether to resume the existing order (route to /orders) or cancel it
-// and retry the new purchase.
-
 import { computed, onBeforeUnmount, ref, watch } from "vue";
-import { useI18n } from "vue-i18n";
 import { useRouter } from "vue-router";
+import { useI18n } from "vue-i18n";
 import {
   NAlert,
   NButton,
-  NEmpty,
-  NForm,
-  NFormItem,
   NInput,
   NModal,
-  NPopconfirm,
-  NRadio,
-  NRadioGroup,
-  NSkeleton,
   NSpace,
   NSpin,
-  NTag,
-  NText,
-  useDialog,
   useMessage,
 } from "naive-ui";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import { listen } from "@/platform";
 import { open as shellOpen } from "@tauri-apps/plugin-shell";
+import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import QRCode from "qrcode";
 import { api } from "@/api";
+import { billingApi, type OrderDetail } from "@/api/billing";
+import {
+  couponDiscount,
+  money,
+  paymentFee,
+  paymentState,
+  periodNames,
+} from "@/utils/billing";
+import { useAuthStore } from "@/stores/auth";
+import { formatError } from "@/utils/error";
 import type {
   CheckoutResponse,
   CouponCheckResult,
   PaymentMethod,
   Plan,
 } from "@/types";
-import { formatError } from "@/utils/error";
 
 const props = defineProps<{
   show: boolean;
-  // "New" path (from Plans.vue): plan + periodKey are both required to call
-  //   /order/save; the modal will then continue into /order/checkout.
-  // "Resume" path (from Orders.vue): existingTradeNo is set and we skip
-  //   straight to /order/checkout. plan/periodKey can be null in this case.
   plan: Plan | null;
   periodKey: string | null;
-  // Cents — purely for header display.
   priceCents: number | null;
   existingTradeNo?: string | null;
-  // Optional header override; used in Resume mode where we surface the
-  // trade_no instead of a plan name.
   displayName?: string | null;
-  // Optional human-readable period label (used by Resume mode where we
-  // already have it formatted from the Orders row, no key→label lookup).
   displayPeriod?: string | null;
 }>();
-
-const emit = defineEmits<{
-  "update:show": [boolean];
-  // Fired when an order reaches a terminal state so the caller (Plans.vue)
-  // can refresh the user's plan / orders pages.
-  done: [];
-}>();
-
-const { t } = useI18n();
-const message = useMessage();
-const dialog = useDialog();
+const emit = defineEmits<{ "update:show": [boolean]; done: [] }>();
 const router = useRouter();
-
-type Stage = "select" | "pending" | "settled" | "failed";
-const stage = ref<Stage>("select");
-
+const { t } = useI18n();
+const toast = useMessage();
+const auth = useAuthStore();
+const stage = ref<"select" | "review" | "pending" | "complete" | "cancelled">(
+  "select",
+);
 const methods = ref<PaymentMethod[]>([]);
-const methodsLoading = ref(false);
-const selectedMethod = ref<number | null>(null);
+const methodId = ref<number | null>(null);
+const loading = ref(false);
+const busy = ref(false);
 const couponCode = ref("");
-const submitting = ref(false);
-
-const tradeNo = ref<string | null>(null);
+const coupon = ref<CouponCheckResult | null>(null);
+const couponBusy = ref(false);
+const couponError = ref("");
+const error = ref("");
+const detail = ref<OrderDetail | null>(null);
+const trade = ref("");
 const checkout = ref<CheckoutResponse | null>(null);
+const expired = ref(false);
+const checking = ref(false);
 const lastStatus = ref<number | null>(null);
-const cancelling = ref(false);
-
-// QR canvas + draw bookkeeping. The canvas mounts inside a v-if so we use
-// a watcher (not onMounted) to draw once the element is in the DOM.
 const qrCanvas = ref<HTMLCanvasElement | null>(null);
-const qrDrawError = ref(false);
-
-// Coupon preview state.
-const couponLoading = ref(false);
-const couponResult = ref<CouponCheckResult | null>(null);
-const couponError = ref<string | null>(null);
-const couponDiscount = ref(0); // in cents — subtracted from base price for display
-
-// Auto-poll bookkeeping. interval id + an `inFlight` guard so we don't
-// stack concurrent /check_order calls if the network is slow.
-let pollInterval: ReturnType<typeof setInterval> | null = null;
-let pollInFlight = false;
-let settleCloseTimer: ReturnType<typeof setTimeout> | null = null;
-let couponDebounceTimer: ReturnType<typeof setTimeout> | null = null;
-
-const periodLabel = computed(() => {
-  if (props.displayPeriod) return props.displayPeriod;
-  if (!props.periodKey) return "—";
-  // Reuse the same map as Plans.vue.
-  const map: Record<string, string> = {
-    month_price: t("plans.period.month"),
-    quarter_price: t("plans.period.quarter"),
-    half_year_price: t("plans.period.halfYear"),
-    year_price: t("plans.period.year"),
-    two_year_price: t("plans.period.twoYear"),
-    three_year_price: t("plans.period.threeYear"),
-    onetime_price: t("plans.period.onetime"),
-  };
-  return map[props.periodKey] ?? props.periodKey;
-});
-
-const headerTitle = computed(() => {
-  if (props.displayName) return props.displayName;
-  if (props.plan) return props.plan.name || `#${props.plan.id}`;
-  return "—";
-});
-
-// Resume mode: we already have a trade_no from a previous /order/save call,
-// so the user only needs to pick a payment method.
-const isResume = computed(() => !!props.existingTradeNo);
-
-// Effective price = base − validated coupon discount, floored at 0.
-const effectivePriceCents = computed(() => {
-  const base = props.priceCents ?? 0;
-  return Math.max(0, base - couponDiscount.value);
-});
-const priceYuan = computed(() => (effectivePriceCents.value / 100).toFixed(2));
-const basePriceYuan = computed(() =>
-  props.priceCents == null ? "" : (props.priceCents / 100).toFixed(2),
+const qrError = ref(false);
+let generation = 0;
+let couponGeneration = 0;
+let couponTimer: ReturnType<typeof setTimeout> | undefined;
+let pollTimer: ReturnType<typeof setTimeout> | undefined;
+let pollStarted = 0;
+let unlisten: UnlistenFn | undefined;
+const method = computed(() =>
+  methods.value.find((m) => m.id === methodId.value),
 );
-const hasDiscount = computed(
-  () => couponDiscount.value > 0 && props.priceCents != null,
+const discount = computed(() =>
+  coupon.value
+    ? couponDiscount(
+        props.priceCents ?? 0,
+        coupon.value.type,
+        coupon.value.value ?? 0,
+      )
+    : 0,
 );
-
-watch(
-  () => props.show,
-  (visible) => {
-    if (visible) {
-      stage.value = "select";
-      tradeNo.value = null;
-      checkout.value = null;
-      lastStatus.value = null;
-      couponCode.value = "";
-      selectedMethod.value = null;
-      resetCoupon();
-      qrDrawError.value = false;
-      void loadMethods();
-    } else {
-      // Cleanup if the user dismissed via the X.
-      stopPolling();
-      clearSettleTimer();
-      clearCouponDebounce();
-    }
-  },
+const estimatedBalance = computed(() =>
+  Math.min(
+    Math.max(0, props.priceCents ?? 0) - discount.value,
+    Math.max(0, auth.userInfo?.balance ?? 0),
+  ),
 );
-
-// Once checkout lands and we're in pending stage with a QR payment, the
-// canvas mounts. Watch for the canvas ref to populate, then draw.
-watch(
-  [qrCanvas, () => stage.value, () => checkout.value],
-  () => {
-    if (
-      stage.value === "pending" &&
-      checkout.value?.type === 0 &&
-      typeof checkout.value.data === "string" &&
-      qrCanvas.value
-    ) {
-      drawQr(checkout.value.data);
-    }
-  },
+const payable = computed(() =>
+  detail.value
+    ? detail.value.total_amount
+    : Math.max(
+        0,
+        (props.priceCents ?? 0) - discount.value - estimatedBalance.value,
+      ),
 );
-
-// Re-validate coupon when the user changes plan or payment method.
-watch(
-  () => [props.plan?.id, selectedMethod.value, props.periodKey] as const,
-  () => {
-    if (couponCode.value.trim().length >= 3) {
-      scheduleCouponCheck();
-    } else {
-      resetCoupon();
-    }
-  },
+const fee = computed(() =>
+  detail.value?.payment_id
+    ? Number(detail.value.handling_amount ?? 0)
+    : paymentFee(
+        payable.value,
+        method.value?.handling_fee_fixed ?? 0,
+        method.value?.handling_fee_percent ?? 0,
+      ),
 );
-
-watch(couponCode, () => {
-  scheduleCouponCheck();
-});
-
-async function loadMethods() {
-  methodsLoading.value = true;
-  try {
-    methods.value = await api.fetchPaymentMethods();
-    if (methods.value.length === 1) {
-      selectedMethod.value = methods.value[0].id;
-    }
-  } catch (e) {
-    message.error(formatError(e, t));
-  } finally {
-    methodsLoading.value = false;
-  }
-}
-
-function feeLabel(m: PaymentMethod): string | null {
-  if (m.handling_fee_fixed && m.handling_fee_fixed > 0) {
-    return t("purchase.feeFixed", {
-      yuan: (m.handling_fee_fixed / 100).toFixed(2),
-    });
-  }
-  if (m.handling_fee_percent && m.handling_fee_percent > 0) {
-    return t("purchase.feePercent", { percent: m.handling_fee_percent });
-  }
-  return null;
-}
-
-// ─── Coupon ────────────────────────────────────────────────────────────
-
-function clearCouponDebounce() {
-  if (couponDebounceTimer) {
-    clearTimeout(couponDebounceTimer);
-    couponDebounceTimer = null;
-  }
-}
-
-function resetCoupon() {
-  clearCouponDebounce();
-  couponLoading.value = false;
-  couponResult.value = null;
-  couponError.value = null;
-  couponDiscount.value = 0;
-}
-
-function scheduleCouponCheck() {
-  clearCouponDebounce();
-  const code = couponCode.value.trim();
-  if (code.length < 3) {
-    // Too short — reset preview but don't show "invalid".
-    couponLoading.value = false;
-    couponResult.value = null;
-    couponError.value = null;
-    couponDiscount.value = 0;
-    return;
-  }
-  // Resume mode: coupon was locked in at save time; don't re-validate.
-  if (isResume.value) return;
-  if (!props.plan) return;
-
-  couponDebounceTimer = setTimeout(() => {
-    void runCouponCheck(code);
-  }, 500);
-}
-
-async function runCouponCheck(code: string) {
-  if (!props.plan) return;
-  const planId = props.plan.id;
-  couponLoading.value = true;
-  couponError.value = null;
-  try {
-    const result = await api.checkCoupon(code, planId);
-    // Bail if the user edited the input while the request was in flight.
-    if (code !== couponCode.value.trim()) return;
-    couponResult.value = result;
-    couponDiscount.value = computeDiscountCents(result);
-  } catch (e) {
-    if (code !== couponCode.value.trim()) return;
-    couponResult.value = null;
-    couponDiscount.value = 0;
-    couponError.value = t("purchase.coupon.invalid");
-    // Don't toast — `formatError(e, t)` is intentionally suppressed.
-    // The inline red text is enough; toasting on every keystroke is noisy.
-    void e;
-  } finally {
-    if (code === couponCode.value.trim()) {
-      couponLoading.value = false;
-    }
-  }
-}
-
-function computeDiscountCents(r: CouponCheckResult): number {
-  const base = props.priceCents ?? 0;
-  if (r.value == null) return 0;
-  if (r.type === 1) {
-    // Fixed amount off in cents.
-    return Math.max(0, Math.min(base, Math.round(r.value)));
-  }
-  if (r.type === 2) {
-    // Percent off.
-    const pct = Math.max(0, Math.min(100, r.value));
-    return Math.round((base * pct) / 100);
-  }
-  return 0;
-}
-
-const couponHint = computed<{ text: string; tone: "ok" | "err" } | null>(() => {
-  if (couponLoading.value) {
-    return { text: t("purchase.coupon.checking"), tone: "ok" };
-  }
-  if (couponError.value) {
-    return { text: couponError.value, tone: "err" };
-  }
-  const r = couponResult.value;
-  if (!r) return null;
-  const discountYuan = (couponDiscount.value / 100).toFixed(2);
-  if (r.type === 2 && r.value != null) {
-    return {
-      text: t("purchase.coupon.discountPercent", {
-        percent: r.value,
-        amount: discountYuan,
-      }),
-      tone: "ok",
-    };
-  }
-  return {
-    text: t("purchase.coupon.discount", { amount: discountYuan }),
-    tone: "ok",
-  };
-});
-
-// ─── QR rendering ──────────────────────────────────────────────────────
-
-async function drawQr(payload: string) {
-  if (!qrCanvas.value) return;
-  qrDrawError.value = false;
-  try {
-    await QRCode.toCanvas(qrCanvas.value, payload, {
-      width: 220,
-      margin: 2,
-      color: { dark: "#f8f7ff", light: "#1a1430" },
-    });
-  } catch {
-    // qrcode lib refuses payloads longer than ~2.9 KB; in practice the
-    // panel only ever sends Alipay / WeChat URIs which are well under
-    // that, but fail gracefully if it ever happens.
-    qrDrawError.value = true;
-  }
-}
-
-// ─── Submit / checkout ────────────────────────────────────────────────
-
-async function submit() {
-  if (selectedMethod.value == null) {
-    message.warning(t("purchase.error.pickPayment"));
-    return;
-  }
-  submitting.value = true;
-  try {
-    await doCheckout();
-  } finally {
-    submitting.value = false;
-  }
-}
-
-async function doCheckout() {
-  let trade: string;
-  try {
-    if (props.existingTradeNo) {
-      // Resume path — order already saved.
-      trade = props.existingTradeNo;
-    } else {
-      if (!props.plan || !props.periodKey) return;
-      const trimmed = couponCode.value.trim();
-      // Only pass the coupon code if it validated cleanly; passing a broken
-      // code would just have the panel reject /save with a different error.
-      const couponToSend =
-        trimmed && couponResult.value && !couponError.value ? trimmed : null;
-      trade = await saveOrderWithPendingHandling(
-        props.plan.id,
-        props.periodKey,
-        couponToSend,
-      );
-      if (!trade) return;
-    }
-  } catch (e) {
-    // SilentAbort = user picked "Resume payment" in the pending dialog
-    // (we already routed to /orders) or dismissed it. Don't toast.
-    if (!(e instanceof SilentAbort)) {
-      message.error(formatError(e, t));
-    }
-    return;
-  }
-  tradeNo.value = trade;
-
-  let resp: CheckoutResponse;
-  try {
-    resp = await api.checkoutOrder(trade, selectedMethod.value!);
-  } catch (e) {
-    message.error(formatError(e, t));
-    return;
-  }
-  checkout.value = resp;
-
-  // type === -1 → backend settled (e.g. from balance). Auto-close shortly.
-  if (resp.type === -1) {
-    stage.value = "settled";
-    lastStatus.value = 3;
-    emit("done");
-    scheduleAutoClose(1000);
-    return;
-  }
-
-  // type === 1 → redirect URL. Open it for the user, but stay in pending
-  // stage so the poller can pick up the payment when they come back.
-  if (resp.type === 1 && typeof resp.data === "string") {
-    try {
-      await shellOpen(resp.data);
-    } catch (e) {
-      message.error(
-        t("purchase.error.openUrl", { message: formatError(e, t) }),
-      );
-    }
-  }
-
-  // type === -2 → gateway form. If `data` is a URL, open it; otherwise
-  // we surface the raw payload for the user to copy.
-  if (
-    resp.type === -2 &&
-    typeof resp.data === "string" &&
-    /^https?:\/\//i.test(resp.data)
-  ) {
-    try {
-      await shellOpen(resp.data);
-    } catch {
-      /* no-op — the user can copy the link from the pending screen */
-    }
-  }
-
-  stage.value = "pending";
-  startPolling();
-}
-
-// B-07: detect the panel's "you already have an unpaid order" error and
-// offer Resume / Cancel + retry. Returns the trade_no on success, or
-// rejects (so the caller surfaces the error normally).
-async function saveOrderWithPendingHandling(
-  planId: number,
-  period: string,
-  coupon: string | null,
-): Promise<string> {
-  try {
-    const trade = await api.saveOrder({
-      planId,
-      period,
-      couponCode: coupon,
-    });
-    if (!trade) throw new Error(t("purchase.error.noTradeNo"));
-    return trade;
-  } catch (e) {
-    if (!isPendingOrderError(e)) throw e;
-    // Resolve once the user picks a path — either resume (which closes
-    // this modal and routes to /orders) or cancel-and-retry (which loops
-    // back into saveOrder with the same params).
-    return new Promise<string>((resolve, reject) => {
-      const d = dialog.warning({
-        title: t("purchase.pending.title"),
-        content: t("purchase.pending.body"),
-        positiveText: t("purchase.pending.resume"),
-        negativeText: t("purchase.pending.cancel"),
-        onPositiveClick: () => {
-          // Close this modal and route to /orders so the user can resume.
-          close();
-          void router.push({ name: "orders" });
-          // Don't resolve — the caller's outer try/catch swallows the
-          // rejection silently because we already redirected.
-          reject(new SilentAbort());
-        },
-        onNegativeClick: async () => {
-          d.loading = true;
-          try {
-            await cancelPendingAndRetry(planId, period, coupon, resolve, reject);
-          } finally {
-            d.loading = false;
-          }
-        },
-        onClose: () => reject(new SilentAbort()),
-        onMaskClick: () => reject(new SilentAbort()),
-      });
-    });
-  }
-}
-
-class SilentAbort extends Error {
-  constructor() {
-    super("aborted");
-    this.name = "SilentAbort";
-  }
-}
-
-async function cancelPendingAndRetry(
-  planId: number,
-  period: string,
-  coupon: string | null,
-  resolve: (trade: string) => void,
-  reject: (err: unknown) => void,
-) {
-  try {
-    // Find the user's pending order and cancel it.
-    const orders = await api.fetchOrders();
-    const pending = orders.find((o) => o.status === 0);
-    if (pending) {
-      await api.cancelOrder(pending.trade_no);
-    }
-    // Retry save_order — if it fails again we surface the new error
-    // verbatim (no recursive dialog loop).
-    const trade = await api.saveOrder({
-      planId,
-      period,
-      couponCode: coupon,
-    });
-    if (!trade) {
-      reject(new Error(t("purchase.error.noTradeNo")));
-      return;
-    }
-    resolve(trade);
-  } catch (e) {
-    message.error(formatError(e, t));
-    reject(new SilentAbort());
-  }
-}
-
-function isPendingOrderError(e: unknown): boolean {
-  // The panel returns either the English ("You have an unpaid or pending
-  // order…") or the Chinese ("您有未付款或开通中的订单…") variant
-  // depending on the user's locale. Match on stable substrings.
-  const msg =
-    (typeof e === "object" && e && "message" in e
-      ? String((e as { message: unknown }).message)
-      : String(e)) || "";
-  return (
-    msg.includes("未付款") ||
-    msg.includes("未支付") ||
-    msg.includes("pending order") ||
-    msg.includes("unpaid or pending")
-  );
-}
-
-// ─── Polling ──────────────────────────────────────────────────────────
-
-function startPolling() {
-  stopPolling();
-  if (!tradeNo.value) return;
-  // Kick once immediately so the user doesn't wait a full 4 s for the
-  // first heartbeat (relevant when payment cleared before this point).
-  void pollOnce();
-  pollInterval = setInterval(() => {
-    void pollOnce();
-  }, 4000);
-  // Window focus → check immediately. Users routinely tab back from the
-  // browser the instant they finish paying.
-  window.addEventListener("focus", onWindowFocus);
-}
+const total = computed(() => payable.value + fee.value);
+const name = computed(
+  () =>
+    detail.value?.plan?.name ||
+    props.displayName ||
+    props.plan?.name ||
+    "套餐订单",
+);
+const period = computed(
+  () =>
+    props.displayPeriod ||
+    periodNames[detail.value?.period || props.periodKey || ""] ||
+    "订阅",
+);
+const paymentUrl = computed(() =>
+  typeof checkout.value?.data === "string" &&
+  /^https:\/\//i.test(checkout.value.data)
+    ? checkout.value.data
+    : "",
+);
+const lockedMethod = computed(() => detail.value?.payment_id != null);
+const canCheckout = computed(
+  () => detail.value && (payable.value === 0 || methodId.value !== null),
+);
 
 function stopPolling() {
-  if (pollInterval) {
-    clearInterval(pollInterval);
-    pollInterval = null;
-  }
-  window.removeEventListener("focus", onWindowFocus);
-  pollInFlight = false;
+  if (pollTimer) clearTimeout(pollTimer);
+  pollTimer = undefined;
 }
-
-function onWindowFocus() {
-  if (stage.value === "pending") void pollOnce();
-}
-
-async function pollOnce() {
-  if (!tradeNo.value || pollInFlight) return;
-  if (stage.value !== "pending") return;
-  pollInFlight = true;
-  try {
-    const status = await api.checkOrder(tradeNo.value);
-    lastStatus.value = status;
-    // Backend status semantics:
-    //   0 pending, 1 activating, 2 cancelled, 3 completed, 4 credited.
-    // 1/3/4 are happy-path terminals; 2 is the user-cancelled / gateway-
-    // refunded path.
-    if (status === 1 || status === 3 || status === 4) {
-      stopPolling();
-      stage.value = "settled";
-      emit("done");
-      message.success(t("purchase.purchaseComplete"));
-      scheduleAutoClose(1500);
-    } else if (status === 2) {
-      stopPolling();
-      stage.value = "failed";
-    }
-  } catch {
-    // Swallow — transient poll errors should not toast every 4 s. The
-    // user can still hit the manual refresh / retry buttons.
-  } finally {
-    pollInFlight = false;
-  }
-}
-
-function scheduleAutoClose(ms: number) {
-  clearSettleTimer();
-  settleCloseTimer = setTimeout(() => {
-    close();
-  }, ms);
-}
-
-function clearSettleTimer() {
-  if (settleCloseTimer) {
-    clearTimeout(settleCloseTimer);
-    settleCloseTimer = null;
-  }
-}
-
-// ─── Other actions ────────────────────────────────────────────────────
-
-async function refreshStatus() {
-  // Manual refresh from the pending UI — simply triggers a poll right now.
-  await pollOnce();
-}
-
-async function cancelOrder() {
-  if (!tradeNo.value) return;
-  cancelling.value = true;
-  try {
-    await api.cancelOrder(tradeNo.value);
-    lastStatus.value = 2;
-    stopPolling();
-    stage.value = "settled";
-    message.success(t("purchase.cancelled"));
-    emit("done");
-    scheduleAutoClose(1500);
-  } catch (e) {
-    message.error(formatError(e, t));
-  } finally {
-    cancelling.value = false;
-  }
-}
-
-async function retry() {
-  // From the 'failed' stage — re-attempt /checkout on the same trade_no.
-  // If the original order was already cancelled by the gateway, the user
-  // should start over from /plans; surface the panel's error in that case.
-  stage.value = "select";
-  lastStatus.value = null;
-  checkout.value = null;
-  // Keep the existing tradeNo so submit() will reuse it as a resume.
-  // Force the resume path by passing tradeNo through props is non-trivial,
-  // so we just re-run the checkout half directly.
-  if (tradeNo.value && selectedMethod.value != null) {
-    submitting.value = true;
-    try {
-      await doCheckoutResume();
-    } finally {
-      submitting.value = false;
-    }
-  }
-}
-
-async function doCheckoutResume() {
-  if (!tradeNo.value || selectedMethod.value == null) return;
-  let resp: CheckoutResponse;
-  try {
-    resp = await api.checkoutOrder(tradeNo.value, selectedMethod.value);
-  } catch (e) {
-    message.error(formatError(e, t));
-    return;
-  }
-  checkout.value = resp;
-  if (resp.type === -1) {
-    stage.value = "settled";
-    lastStatus.value = 3;
-    emit("done");
-    scheduleAutoClose(1000);
-    return;
-  }
-  if (resp.type === 1 && typeof resp.data === "string") {
-    try {
-      await shellOpen(resp.data);
-    } catch (e) {
-      message.error(
-        t("purchase.error.openUrl", { message: formatError(e, t) }),
-      );
-    }
-  }
-  stage.value = "pending";
-  startPolling();
-}
-
-async function copyData() {
-  if (typeof checkout.value?.data !== "string") return;
-  try {
-    await navigator.clipboard.writeText(checkout.value.data);
-    message.success(t("purchase.qrCopied"));
-  } catch {
-    /* ignore — user can manually select & copy */
-  }
-}
-
-async function openUrl() {
-  if (typeof checkout.value?.data !== "string") return;
-  try {
-    await shellOpen(checkout.value.data);
-  } catch (e) {
-    message.error(t("purchase.error.openUrl", { message: formatError(e, t) }));
-  }
-}
-
-const statusLine = computed(() => {
-  if (lastStatus.value == null) return "";
-  switch (lastStatus.value) {
-    case 0:
-      return t("purchase.statusPending");
-    case 1:
-      return t("purchase.statusActivating");
-    case 2:
-      return t("purchase.statusCancelled");
-    case 3:
-      return t("purchase.statusCompleted");
-    case 4:
-      return t("purchase.statusCompleted");
-    default:
-      return t("purchase.statusUnknown", { code: lastStatus.value });
-  }
-});
-
 function close() {
+  generation++;
   stopPolling();
-  clearSettleTimer();
-  clearCouponDebounce();
   emit("update:show", false);
 }
+function toOrders() {
+  close();
+  void router.push({ name: "orders" });
+}
+async function readDetail() {
+  if (!trade.value) return;
+  const token = generation;
+  const order = await billingApi.detail(trade.value);
+  if (token !== generation) return;
+  detail.value = order;
+  lastStatus.value = order.status;
+  if (order.payment_id != null) methodId.value = order.payment_id;
+  const state = paymentState(order.status);
+  if (state === "complete") stage.value = "complete";
+  else if (state === "cancelled") stage.value = "cancelled";
+  else if (state === "activating") {
+    stage.value = "pending";
+    startPolling();
+  } else stage.value = "review";
+}
+watch(
+  () => props.show,
+  async (visible) => {
+    const token = ++generation;
+    stopPolling();
+    if (!visible) return;
+    error.value = "";
+    couponCode.value = "";
+    coupon.value = null;
+    couponError.value = "";
+    detail.value = null;
+    checkout.value = null;
+    methodId.value = null;
+    lastStatus.value = null;
+    stage.value = "select";
+    expired.value = false;
+    trade.value = props.existingTradeNo || "";
+    loading.value = true;
+    const result = await Promise.allSettled([
+      api.fetchPaymentMethods(),
+      trade.value ? readDetail() : Promise.resolve(),
+    ]);
+    if (token !== generation) return;
+    if (result[0].status === "fulfilled") {
+      methods.value = result[0].value;
+      if (methodId.value == null) methodId.value = methods.value[0]?.id ?? null;
+    } else {
+      methods.value = [];
+      error.value = formatError(result[0].reason, t);
+    }
+    if (result[1].status === "rejected")
+      error.value = formatError(result[1].reason, t);
+    loading.value = false;
+  },
+  { immediate: true },
+);
 
-onBeforeUnmount(() => {
-  stopPolling();
-  clearSettleTimer();
-  clearCouponDebounce();
+watch([couponCode, () => props.plan?.id, () => props.periodKey], () => {
+  const token = ++couponGeneration;
+  if (couponTimer) clearTimeout(couponTimer);
+  coupon.value = null;
+  couponError.value = "";
+  couponBusy.value = false;
+  const code = couponCode.value.trim();
+  if (!code || !props.plan || !props.periodKey || trade.value) return;
+  couponBusy.value = true;
+  const plan = props.plan.id;
+  const periodKey = props.periodKey;
+  couponTimer = setTimeout(async () => {
+    try {
+      const response = await billingApi.checkCoupon(code, plan, periodKey);
+      if (token === couponGeneration) coupon.value = response;
+    } catch (e) {
+      if (token === couponGeneration) couponError.value = formatError(e, t);
+    } finally {
+      if (token === couponGeneration) couponBusy.value = false;
+    }
+  }, 450);
 });
 
-// Coerce `data` to a printable string for the pending screen.
-const checkoutDataText = computed(() => {
-  const d = checkout.value?.data;
-  if (d == null) return "";
-  if (typeof d === "string") return d;
+async function createOrder() {
+  if (
+    busy.value ||
+    couponBusy.value ||
+    (!trade.value &&
+      (!props.plan ||
+        !props.periodKey ||
+        (couponCode.value.trim() && !coupon.value)))
+  )
+    return;
+  busy.value = true;
+  error.value = "";
+  const token = generation;
   try {
-    return JSON.stringify(d, null, 2);
+    // Keep the allocated trade number even when the following detail fetch
+    // fails. Retrying must never allocate or cancel a second order.
+    if (!trade.value)
+      trade.value = await api.saveOrder({
+        planId: props.plan!.id,
+        period: props.periodKey!,
+        couponCode: couponCode.value.trim() || null,
+      });
+    if (token !== generation) return;
+    await readDetail();
+    void auth.refreshUser().catch(() => {});
+  } catch (e) {
+    error.value = formatError(e, t);
+  } finally {
+    if (token === generation) busy.value = false;
+  }
+}
+async function pay() {
+  if (!canCheckout.value || busy.value || !trade.value) return;
+  busy.value = true;
+  error.value = "";
+  const token = generation;
+  try {
+    checkout.value = await api.checkoutOrder(
+      trade.value,
+      payable.value === 0 ? 0 : methodId.value!,
+    );
+    if (token !== generation) return;
+    // Even a free checkout may still be activating. Never report active
+    // service until the backend confirms completion.
+    stage.value = "pending";
+    startPolling();
+    if (checkout.value.type === 1 || checkout.value.type === -2) {
+      if (paymentUrl.value) await openPayment();
+      else
+        error.value =
+          "该支付方式需要额外的支付表单，暂时无法在客户端完成。请前往订单中心，或联系客户支持。";
+    }
+  } catch (e) {
+    if (token === generation) error.value = formatError(e, t);
+  } finally {
+    if (token === generation) busy.value = false;
+  }
+}
+async function openPayment() {
+  if (!paymentUrl.value) return;
+  try {
+    await billingApi.openPayment(paymentUrl.value, trade.value);
   } catch {
-    return String(d);
+    try {
+      await shellOpen(paymentUrl.value);
+    } catch (e) {
+      error.value = formatError(e, t);
+    }
+  }
+}
+function startPolling() {
+  stopPolling();
+  expired.value = false;
+  pollStarted = Date.now();
+  void checkStatus();
+}
+async function checkStatus() {
+  if (
+    checking.value ||
+    !trade.value ||
+    !props.show ||
+    stage.value !== "pending"
+  )
+    return;
+  stopPolling();
+  checking.value = true;
+  const token = generation;
+  try {
+    const status = await api.checkOrder(trade.value);
+    if (token !== generation || !props.show) return;
+    lastStatus.value = status;
+    error.value = "";
+    if (paymentState(status) === "complete") {
+      stage.value = "complete";
+      emit("done");
+      return;
+    }
+    if (status === 2) {
+      stage.value = "cancelled";
+      return;
+    }
+  } catch (e) {
+    if (token === generation) error.value = formatError(e, t);
+  } finally {
+    checking.value = false;
+    if (token === generation && stage.value === "pending" && props.show) {
+      if (Date.now() - pollStarted >= 10 * 60 * 1000) expired.value = true;
+      else
+        pollTimer = setTimeout(
+          () => void checkStatus(),
+          Date.now() - pollStarted > 60000 ? 8000 : 4000,
+        );
+    }
+  }
+}
+function focusCheck() {
+  if (props.show && stage.value === "pending") void checkStatus();
+}
+window.addEventListener("focus", focusCheck);
+void listen<string>("payment://returned", (event) => {
+  if (event.payload === trade.value) focusCheck();
+})
+  .then((off) => {
+    unlisten = off;
+  })
+  .catch(() => {});
+async function copyPayment() {
+  const text =
+    typeof checkout.value?.data === "string" ? checkout.value.data : "";
+  if (!text) return;
+  try {
+    await writeText(text);
+    toast.success("支付信息已复制");
+  } catch (e) {
+    error.value = formatError(e, t);
+  }
+}
+watch([qrCanvas, checkout], async () => {
+  if (
+    !qrCanvas.value ||
+    checkout.value?.type !== 0 ||
+    typeof checkout.value.data !== "string"
+  )
+    return;
+  try {
+    await QRCode.toCanvas(qrCanvas.value, checkout.value.data, {
+      width: 232,
+      margin: 2,
+      color: { dark: "#242539", light: "#ffffff" },
+    });
+  } catch {
+    qrError.value = true;
   }
 });
-
-const checkoutDataIsUrl = computed(
-  () =>
-    typeof checkout.value?.data === "string" &&
-    /^https?:\/\//i.test(checkout.value.data),
-);
+onBeforeUnmount(() => {
+  generation++;
+  couponGeneration++;
+  stopPolling();
+  if (couponTimer) clearTimeout(couponTimer);
+  unlisten?.();
+  window.removeEventListener("focus", focusCheck);
+});
 </script>
 
 <template>
   <NModal
     :show="show"
     preset="card"
-    style="max-width: 480px"
-    :title="t('purchase.title')"
-    :mask-closable="stage !== 'pending'"
-    :close-on-esc="stage !== 'pending'"
-    :show-close="true"
-    :on-close="close"
-    @update:show="(v: boolean) => emit('update:show', v)"
+    title="确认订阅"
+    class="purchase-modal"
+    style="width: min(520px, calc(100vw - 32px)); border-radius: 24px"
+    :mask-closable="!busy"
+    :closable="!busy"
+    @update:show="close"
   >
-    <div class="head">
-      <div class="head-row">
-        <NText depth="3">{{ t("purchase.plan") }}</NText>
-        <NText strong>{{ headerTitle }}</NText>
+    <div class="steps">
+      <span :class="{ active: stage === 'select' }">01 选择订阅</span><i /><span
+        :class="{ active: stage === 'review' }"
+        >02 核对订单</span
+      ><i /><span
+        :class="{ active: stage === 'pending' || stage === 'complete' }"
+        >03 完成支付</span
+      >
+    </div>
+    <div class="summary">
+      <div>
+        <span class="eyebrow">YOUR SUBSCRIPTION</span>
+        <h2>{{ name }}</h2>
+        <span class="muted">{{ period }}</span>
       </div>
-      <div class="head-row">
-        <NText depth="3">{{ t("purchase.period") }}</NText>
-        <NText>{{ periodLabel }}</NText>
-      </div>
-      <div class="head-row">
-        <NText depth="3">{{ t("purchase.price") }}</NText>
-        <span class="price-stack">
-          <NText
-            v-if="hasDiscount"
-            depth="3"
-            class="price-strike"
-          >¥ {{ basePriceYuan }}</NText>
-          <NText strong class="price">¥ {{ priceYuan }}</NText>
-        </span>
+      <div class="summary-price">
+        <small>¥</small>{{ money(total)
+        }}<span>{{ detail ? "应付金额" : "预计应付" }}</span>
       </div>
     </div>
-
-    <template v-if="stage === 'select'">
-      <NForm label-placement="top" size="small" class="form">
-        <NFormItem v-if="!isResume" :label="t('purchase.couponLabel')">
-          <div class="coupon-wrap">
-            <NInput
-              v-model:value="couponCode"
-              :placeholder="t('purchase.couponPlaceholder')"
-              :disabled="submitting"
-              clearable
-            />
-            <div
-              v-if="couponHint"
-              class="coupon-hint"
-              :class="couponHint.tone === 'err' ? 'is-err' : 'is-ok'"
-            >
-              <NSpin v-if="couponLoading" size="small" />
-              <span>{{ couponHint.text }}</span>
-            </div>
-          </div>
-        </NFormItem>
-
-        <NFormItem :label="t('purchase.paymentMethod')">
-          <div v-if="methodsLoading" class="methods-loading">
-            <NSkeleton text :repeat="2" />
-          </div>
-          <NEmpty
-            v-else-if="methods.length === 0"
-            :description="t('purchase.paymentMethodEmpty')"
-            size="small"
-          />
-          <NRadioGroup
-            v-else
-            v-model:value="selectedMethod"
-            class="methods"
+    <NSpin v-if="loading" class="loading" />
+    <template v-else-if="stage === 'select' || stage === 'review'">
+      <div v-if="!trade" class="coupon-field">
+        <label>优惠码 <span>可选</span></label
+        ><NInput
+          v-model:value="couponCode"
+          placeholder="输入优惠码，自动验证"
+          :disabled="busy"
+          clearable
+        /><small v-if="couponBusy" class="muted">正在验证此套餐与周期…</small
+        ><small v-else-if="couponError" class="error-text">{{
+          couponError
+        }}</small
+        ><small v-else-if="coupon" class="success-text"
+          >已优惠 ¥{{ money(discount) }}</small
+        >
+      </div>
+      <div class="breakdown">
+        <div>
+          <span>套餐金额</span
+          ><span
+            >¥{{
+              money(
+                detail
+                  ? detail.total_amount +
+                      (detail.discount_amount ?? 0) +
+                      (detail.balance_amount ?? 0) +
+                      (detail.surplus_amount ?? 0)
+                  : (priceCents ?? 0),
+              )
+            }}</span
           >
-            <NSpace vertical :size="8">
-              <NRadio
-                v-for="m in methods"
-                :key="m.id"
-                :value="m.id"
-                class="method-row"
-              >
-                <span class="method-name">{{ m.name || m.payment }}</span>
-                <NTag
-                  v-if="feeLabel(m)"
-                  size="small"
-                  :bordered="false"
-                  type="warning"
-                >
-                  {{ feeLabel(m) }}
-                </NTag>
-              </NRadio>
-            </NSpace>
-          </NRadioGroup>
-        </NFormItem>
-      </NForm>
-    </template>
-
-    <template v-else-if="stage === 'pending'">
-      <!-- QR-payment driver (Alipay F2F / WeChat F2F) — render a canvas. -->
-      <template v-if="checkout?.type === 0 && typeof checkout?.data === 'string'">
-        <div class="qr-block">
-          <NText strong class="qr-title">{{ t("purchase.qr.title") }}</NText>
-          <canvas ref="qrCanvas" class="qr-canvas" />
-          <NText depth="3" class="qr-hint">{{ t("purchase.qr.hint") }}</NText>
-          <NAlert
-            v-if="qrDrawError"
-            type="warning"
-            :show-icon="false"
-            class="qr-fallback"
-          >
-            {{ t("purchase.qr.fallback") }}
-          </NAlert>
-          <NText depth="3" class="poll-line">{{ t("purchase.poll.waiting") }}</NText>
         </div>
-      </template>
-
-      <!-- Redirect URL — already opened in the browser. -->
-      <template v-else-if="checkout?.type === 1">
-        <NAlert :title="t('purchase.pendingTitle')" type="info" :show-icon="true">
-          {{ t("purchase.redirectOpened") }}
-        </NAlert>
-        <NText depth="3" class="poll-line">{{ t("purchase.poll.waiting") }}</NText>
-      </template>
-
-      <!-- Gateway-specific (Stripe form etc.) — surface the raw payload. -->
-      <template v-else>
-        <NAlert :title="t('purchase.pendingTitle')" type="info" :show-icon="true">
-          <pre class="qr-data">{{ checkoutDataText }}</pre>
-        </NAlert>
-        <NText depth="3" class="poll-line">{{ t("purchase.poll.waiting") }}</NText>
-      </template>
-
-      <NText v-if="statusLine" depth="3" class="status-line">
-        {{ statusLine }}
-      </NText>
-    </template>
-
-    <template v-else-if="stage === 'failed'">
-      <NAlert
-        :title="t('purchase.poll.failed')"
-        type="warning"
-        :show-icon="true"
+        <div v-if="detail?.discount_amount || discount">
+          <span>优惠券优惠</span
+          ><span class="success-text"
+            >− ¥{{ money(detail?.discount_amount ?? discount) }}</span
+          >
+        </div>
+        <div v-if="detail?.balance_amount || (!detail && estimatedBalance)">
+          <span>余额抵扣</span
+          ><span class="success-text"
+            >− ¥{{ money(detail?.balance_amount ?? estimatedBalance) }}</span
+          >
+        </div>
+        <div v-if="detail?.surplus_amount">
+          <span>旧套餐折抵</span
+          ><span class="success-text"
+            >− ¥{{ money(detail.surplus_amount) }}</span
+          >
+        </div>
+        <div v-if="fee">
+          <span>支付手续费</span><span>¥{{ money(fee) }}</span>
+        </div>
+      </div>
+      <template v-if="payable > 0"
+        ><label class="field-label"
+          >支付方式 <span v-if="lockedMethod">已绑定此订单</span></label
+        >
+        <div class="payment-methods">
+          <button
+            v-for="m in methods"
+            :key="m.id"
+            type="button"
+            :disabled="busy || (lockedMethod && m.id !== detail?.payment_id)"
+            :class="{ selected: methodId === m.id }"
+            @click="methodId = m.id"
+          >
+            <span class="radio-dot" /><strong>{{ m.name || m.payment }}</strong
+            ><small v-if="m.handling_fee_fixed || m.handling_fee_percent"
+              >含手续费 ¥{{
+                money(
+                  paymentFee(
+                    payable,
+                    m.handling_fee_fixed ?? 0,
+                    m.handling_fee_percent ?? 0,
+                  ),
+                )
+              }}</small
+            >
+          </button>
+        </div>
+        <p v-if="!methods.length" class="muted">
+          当前暂无可用的支付渠道。你仍可创建订单核对余额及折抵，或联系客户支持。
+        </p>
+        <p
+          v-if="
+            lockedMethod && !methods.some((m) => m.id === detail?.payment_id)
+          "
+          class="error-text"
+        >
+          此订单绑定的支付方式已停用，请联系客户支持。
+        </p></template
       >
-        {{ statusLine || t("purchase.statusCancelled") }}
-      </NAlert>
-    </template>
-
-    <template v-else>
-      <NAlert
-        :title="lastStatus === 2 ? statusLine : t('purchase.poll.success')"
-        :type="lastStatus === 2 ? 'warning' : 'success'"
-        :show-icon="true"
+      <NAlert v-else type="success" :show-icon="false"
+        >此订单预计可通过优惠或余额结清，无需选择支付渠道。</NAlert
       >
-        <template v-if="checkout?.type === -1">
-          {{ t("purchase.balancePaid") }}
-        </template>
-        <template v-else-if="lastStatus !== 2">
-          {{ t("purchase.statusCompleted") }}
-        </template>
-      </NAlert>
+      <p class="footnote">
+        {{
+          detail
+            ? "金额已由服务器核对。关闭窗口会保留订单，可在订单中心继续支付。"
+            : "创建订单后将自动使用账户余额，最终折抵金额将在下一步核对。"
+        }}
+      </p>
     </template>
-
-    <template #footer>
-      <NSpace justify="end" :size="8">
-        <template v-if="stage === 'select'">
-          <NButton :disabled="submitting" @click="close">
-            {{ t("purchase.cancel") }}
-          </NButton>
-          <NButton
-            type="primary"
-            :loading="submitting"
-            :disabled="
-              methods.length === 0 ||
-              selectedMethod == null ||
-              couponLoading
-            "
-            @click="submit"
-          >
-            {{ submitting ? t("purchase.submitting") : t("purchase.submit") }}
-          </NButton>
-        </template>
-
-        <template v-else-if="stage === 'pending'">
-          <!-- QR mode — let user copy the raw payment string. -->
-          <NButton
-            v-if="checkout?.type === 0 && typeof checkout?.data === 'string'"
-            @click="copyData"
-          >
-            {{ t("purchase.qrCopy") }}
-          </NButton>
-          <!-- Redirect / gateway-with-URL — offer copy + re-open. -->
-          <NButton
-            v-if="(checkout?.type === 1 || checkout?.type === -2) && checkoutDataIsUrl"
-            @click="copyData"
-          >
-            {{ t("purchase.copyLink") }}
-          </NButton>
-          <NButton
-            v-if="checkout?.type === 1 && checkoutDataIsUrl"
-            @click="openUrl"
-          >
-            {{ t("purchase.reopenLink") }}
-          </NButton>
-          <NPopconfirm
-            :positive-text="t('purchase.cancelYes')"
-            :negative-text="t('purchase.cancelNo')"
-            @positive-click="cancelOrder"
-          >
-            <template #trigger>
-              <NButton :loading="cancelling" type="warning" ghost>
-                {{ t("purchase.cancelOrder") }}
-              </NButton>
-            </template>
-            {{ t("purchase.cancelConfirm") }}
-          </NPopconfirm>
-          <NButton type="primary" @click="refreshStatus">
-            {{ t("purchase.statusRefresh") }}
-          </NButton>
-        </template>
-
-        <template v-else-if="stage === 'failed'">
-          <NButton @click="close">
-            {{ t("purchase.close") }}
-          </NButton>
-          <NButton type="primary" :loading="submitting" @click="retry">
-            {{ t("purchase.poll.retry") }}
-          </NButton>
-        </template>
-
-        <template v-else>
-          <NButton type="primary" @click="close">
-            {{ t("purchase.close") }}
-          </NButton>
-        </template>
-      </NSpace>
+    <template v-else-if="stage === 'pending'">
+      <div class="pending">
+        <template v-if="checkout?.type === 0"
+          ><canvas ref="qrCanvas" />
+          <p>使用对应支付应用扫描二维码</p>
+          <p v-if="qrError" class="error-text">
+            二维码生成失败，请复制支付信息。
+          </p></template
+        ><template v-else
+          ><div class="payment-orbit"><span>↗</span></div>
+          <h3>
+            {{ lastStatus === 1 ? "付款已确认，正在开通" : "等待支付完成" }}
+          </h3>
+          <p>
+            {{
+              lastStatus === 1
+                ? "服务器正在处理你的订阅，请稍候。"
+                : "请在支付窗口完成付款。返回客户端后会自动更新。"
+            }}
+          </p></template
+        >
+        <p v-if="expired" class="timeout-note">
+          暂未确认最终结果，已暂停自动检查。订单仍然保留，请勿重复付款。
+        </p>
+        <div v-else class="sync-note"><span />正在同步订单状态</div>
+        <code>{{ trade }}</code>
+      </div>
     </template>
+    <div v-else-if="stage === 'complete'" class="result">
+      <div class="success-mark">✓</div>
+      <h2>订阅已就绪</h2>
+      <p>付款已确认，套餐信息已更新。现在可以开始连接。</p>
+    </div>
+    <div v-else class="result">
+      <h2>订单已取消</h2>
+      <p>此订单无法继续付款，可以返回套餐页面重新选择。</p>
+    </div>
+    <NAlert v-if="error" type="warning" :show-icon="false" class="payment-error"
+      >{{ error
+      }}<NButton v-if="stage === 'select'" text type="primary" @click="toOrders"
+        >前往订单中心查看已有订单 →</NButton
+      ></NAlert
+    >
+    <template #footer
+      ><NSpace justify="end" :size="10"
+        ><NButton :disabled="busy" @click="close">{{
+          stage === "pending" ? "稍后继续" : "关闭"
+        }}</NButton
+        ><NButton
+          v-if="stage === 'select'"
+          type="primary"
+          :loading="busy"
+          :disabled="loading || couponBusy || (!!couponCode.trim() && !coupon)"
+          @click="createOrder"
+          >{{ trade ? "重新核对订单" : "创建订单并核对" }}</NButton
+        ><NButton
+          v-if="stage === 'review'"
+          type="primary"
+          :loading="busy"
+          :disabled="
+            !canCheckout ||
+            (payable > 0 && !methods.some((m) => m.id === methodId))
+          "
+          @click="pay"
+          >{{ total === 0 ? "立即开通" : `确认支付 ¥${money(total)}` }}</NButton
+        ><template v-if="stage === 'pending'"
+          ><NButton
+            v-if="checkout && typeof checkout.data === 'string'"
+            @click="copyPayment"
+            >复制支付信息</NButton
+          ><NButton v-if="paymentUrl" @click="openPayment">打开支付页</NButton
+          ><NButton type="primary" :loading="checking" @click="startPolling"
+            >我已付款，检查状态</NButton
+          ></template
+        ><NButton
+          v-if="stage === 'complete'"
+          type="primary"
+          @click="
+            close();
+            router.push({ name: 'home' });
+          "
+          >开始连接</NButton
+        ></NSpace
+      ></template
+    >
   </NModal>
 </template>
 
 <style scoped>
-.head {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 0 14px;
-  border-bottom: 1px solid var(--n-border-color);
-  margin-bottom: 14px;
-}
-.head-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  font-size: 13px;
-}
-.price-stack {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 8px;
-}
-.price-strike {
-  text-decoration: line-through;
-  font-size: 12px;
-  opacity: 0.6;
-}
-.price {
-  font-variant-numeric: tabular-nums;
-  font-size: 16px;
-}
-.form {
-  margin-top: 4px;
-}
-.coupon-wrap {
-  width: 100%;
-}
-.coupon-hint {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 6px;
-  font-size: 12px;
-}
-.coupon-hint.is-ok {
-  color: #2ecc71;
-}
-.coupon-hint.is-err {
-  color: #e74c3c;
-}
-.methods {
-  width: 100%;
-}
-.method-row {
+.steps {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 4px 0;
+  font-size: 11px;
+  color: #aaa9bb;
+  margin: 2px 0 25px;
 }
-.method-name {
-  margin-right: 8px;
+.steps i {
+  height: 1px;
+  flex: 1;
+  background: #eeedf5;
 }
-.methods-loading {
-  width: 100%;
-  padding: 8px 0;
+.steps .active {
+  color: #7165e9;
+  font-weight: 700;
 }
-.qr-block {
+.summary {
   display: flex;
-  flex-direction: column;
+  justify-content: space-between;
   align-items: center;
-  gap: 8px;
-  padding: 8px 0 4px;
+  background: #f6f5fe;
+  border-radius: 18px;
+  padding: 24px;
+  margin-bottom: 24px;
 }
-.qr-title {
-  font-size: 14px;
+.eyebrow {
+  color: #aaa2db;
+  font-size: 9px;
+  letter-spacing: 1.5px;
 }
-.qr-canvas {
-  width: 220px;
-  height: 220px;
-  border-radius: 10px;
-  background: #1a1430;
+.summary h2 {
+  font-size: 21px;
+  margin: 6px 0;
+  color: #242539;
 }
-.qr-hint {
-  font-size: 12px;
-  text-align: center;
+.summary-price {
+  font-size: 30px;
+  color: #7165e9;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
-.qr-fallback {
-  width: 100%;
+.summary-price small {
+  font-size: 16px;
+  margin-right: 3px;
 }
-.poll-line {
+.summary-price > span {
   display: block;
-  margin-top: 10px;
-  font-size: 12px;
-  text-align: center;
+  font-size: 11px;
+  text-align: right;
+  color: #9895b4;
+  font-weight: 400;
 }
-.qr-data {
-  margin: 8px 0 0;
-  padding: 8px;
-  background: var(--n-action-color, rgba(128, 128, 128, 0.08));
-  border-radius: 6px;
-  white-space: pre-wrap;
-  word-break: break-all;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+.muted,
+.footnote {
+  color: #9391a6;
   font-size: 12px;
-  max-height: 180px;
-  overflow: auto;
 }
-.status-line {
+.coupon-field label,
+.field-label {
   display: block;
-  margin-top: 12px;
+  margin-bottom: 9px;
   font-size: 13px;
+  font-weight: 600;
+  color: #45445a;
+}
+.coupon-field label span,
+.field-label span {
+  font-size: 11px;
+  color: #aaa8b9;
+  margin-left: 5px;
+  font-weight: 400;
+}
+.coupon-field small {
+  display: block;
+  margin-top: 7px;
+}
+.breakdown {
+  display: grid;
+  gap: 9px;
+  margin: 22px 0;
+  font-size: 12px;
+  color: #777487;
+}
+.breakdown > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 15px;
+}
+.success-text {
+  color: #35a888;
+}
+.error-text {
+  color: #d8736c;
+}
+.payment-methods {
+  display: grid;
+  gap: 8px;
+}
+.payment-methods button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #e9e7f2;
+  background: #fff;
+  border-radius: 12px;
+  padding: 13px 14px;
+  color: #49465c;
+  cursor: pointer;
+  text-align: left;
+}
+.payment-methods button.selected {
+  border-color: #7165e9;
+  background: #f8f7ff;
+}
+.payment-methods button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.payment-methods button strong {
+  font-weight: 500;
+  flex: 1;
+}
+.payment-methods button small {
+  color: #9c96af;
+  font-size: 10px;
+}
+.radio-dot {
+  height: 13px;
+  width: 13px;
+  border: 1px solid #d3cfe3;
+  border-radius: 50%;
+}
+.selected .radio-dot {
+  border: 4px solid #7165e9;
+  height: 7px;
+  width: 7px;
+}
+.footnote {
+  font-size: 11px;
+  line-height: 1.8;
+  margin: 17px 0 0;
+}
+.pending,
+.result {
+  text-align: center;
+  padding: 15px 0;
+}
+.pending canvas {
+  border: 1px solid #eeedf5;
+  border-radius: 18px;
+  width: 232px;
+  height: 232px;
+}
+.pending p,
+.result p {
+  color: #8d899d;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.pending code {
+  display: block;
+  font-size: 10px;
+  color: #aaa6ba;
+  margin: 15px 0;
+}
+.payment-orbit,
+.success-mark {
+  height: 78px;
+  width: 78px;
+  border-radius: 24px;
+  margin: 0 auto 20px;
+  background: #eeeafd;
+  color: #7165e9;
+  display: grid;
+  place-items: center;
+  font-size: 32px;
+}
+.success-mark {
+  background: #e8f7ef;
+  color: #3aaa83;
+}
+.sync-note {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  color: #9e96b8;
+  font-size: 11px;
+}
+.sync-note span {
+  width: 6px;
+  height: 6px;
+  background: #7165e9;
+  border-radius: 50%;
+  animation: pulse 2s infinite;
+}
+.timeout-note {
+  background: #fff6e9;
+  padding: 12px;
+  border-radius: 12px;
+  color: #b98e44 !important;
+}
+.payment-error {
+  margin-top: 15px;
+}
+.payment-error :deep(.n-button) {
+  display: block;
+  margin-top: 8px;
+}
+.loading {
+  display: block;
+  margin: 30px auto;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.3;
+  }
 }
 </style>

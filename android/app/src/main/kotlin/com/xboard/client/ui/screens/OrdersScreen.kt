@@ -21,6 +21,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.Button
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -42,6 +48,8 @@ import kotlinx.coroutines.launch
 fun OrdersScreen(viewModel: AppViewModel, onBack: () -> Unit) {
     val state by viewModel.orders.collectAsState()
     val scope = rememberCoroutineScope()
+    var payment by remember { mutableStateOf<String?>(null) }
+    var cancel by remember { mutableStateOf<Order?>(null) }
 
     LaunchedEffect(Unit) { viewModel.refreshOrders() }
 
@@ -70,23 +78,22 @@ fun OrdersScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                     for (order in list) {
                         OrderCard(
                             order = order,
-                            onCancel = {
-                                scope.launch {
-                                    if (viewModel.cancelOrder(order.tradeNo)) {
-                                        viewModel.refreshOrders()
-                                    }
-                                }
-                            },
+                            onCancel = { cancel = order },
+                            onPayment = { payment = order.tradeNo },
                         )
                     }
                 }
             }
         }
     }
+    payment?.let { OrderPaymentSheet(viewModel, it, onDismiss = { payment = null }) }
+    cancel?.let { order -> AlertDialog(onDismissRequest = { cancel = null }, title = { Text("取消这个待付款订单？") }, text = { Text(order.tradeNo) },
+        confirmButton = { TextButton(onClick = { cancel = null; scope.launch { if (viewModel.cancelOrder(order.tradeNo)) viewModel.refreshOrders() } }) { Text("确认取消") } },
+        dismissButton = { TextButton(onClick = { cancel = null }) { Text("保留订单") } }) }
 }
 
 @Composable
-private fun OrderCard(order: Order, onCancel: () -> Unit) {
+private fun OrderCard(order: Order, onCancel: () -> Unit, onPayment: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(
@@ -118,12 +125,14 @@ private fun OrderCard(order: Order, onCancel: () -> Unit) {
             }
 
             if (order.status == 0) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = onPayment) { Text("继续付款") }
                     OutlinedButton(onClick = onCancel) {
                         Text(stringResource(R.string.orders_action_cancel))
                     }
                 }
             }
+            if (order.status == 1) OutlinedButton(onClick = onPayment) { Text("查询开通状态") }
         }
     }
 }

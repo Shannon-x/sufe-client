@@ -3,6 +3,8 @@ package com.xboard.client.ui.screens
 import android.graphics.Paint
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -33,6 +35,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -79,9 +82,14 @@ fun HomeScreen(
     onOpenOrders: () -> Unit,
     onOpenTickets: () -> Unit,
     onOpenNotices: () -> Unit,
+    onOpenAccount: () -> Unit,
+    onOpenRules: () -> Unit,
+    onOpenFeatures: () -> Unit,
+    onOpenSupport: () -> Unit,
 ) {
     val home by viewModel.home.collectAsState()
     val connection by viewModel.connection.collectAsState()
+    val business by viewModel.business.state.collectAsState()
     val ctx = LocalContext.current
     val pins = remember(connection.proxies, connection.selectedNode) {
         collectMapPins(connection.proxies, connection.selectedNode)
@@ -96,6 +104,7 @@ fun HomeScreen(
         title = stringResource(R.string.app_name),
         onBack = null,
         actions = {
+            TextButton(onClick = onOpenFeatures) { Text("偏好") }
             IconButton(onClick = { viewModel.refreshHome() }) {
                 Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.home_refresh))
             }
@@ -108,7 +117,7 @@ fun HomeScreen(
             modifier = padded
                 .background(
                     Brush.verticalGradient(
-                        listOf(Color(0xFF21182D), Color(0xFF14111C), Color(0xFF10141E)),
+                        listOf(Color(0xFFF0EDFF), Color(0xFFF6F7FB), Color(0xFFF6F7FB)),
                     ),
                 ),
         ) {
@@ -121,14 +130,15 @@ fun HomeScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
                     .padding(horizontal = 20.dp, vertical = 18.dp),
-                verticalArrangement = Arrangement.SpaceBetween,
+                verticalArrangement = Arrangement.spacedBy(26.dp),
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
                         Text(
-                            text = if (connected) "已保护" else "未保护",
-                            color = if (connected) Color(0xFF00D09C) else Color(0xFFFF6380),
+                            text = if (connected) "连接已就绪" else "随时开启，自在连接",
+                            color = if (connected) Color(0xFF279A84) else Color(0xFF858697),
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.ExtraBold,
                         )
@@ -136,9 +146,9 @@ fun HomeScreen(
                             text = if (connected) {
                                 connection.selectedNode ?: stringResource(R.string.connect_current_node)
                             } else {
-                                "连接以保护您的隐私"
+                                "一键连接全球，让每次出发更轻松"
                             },
-                            color = Color(0xFFC9C1D8),
+                            color = Color(0xFF858697),
                             style = MaterialTheme.typography.bodyMedium,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -174,12 +184,17 @@ fun HomeScreen(
                     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             DashboardAction("节点", onOpenConnect, Modifier.weight(1f))
-                            DashboardAction(stringResource(R.string.home_menu_plans), onOpenPlans, Modifier.weight(1f))
-                            DashboardAction(stringResource(R.string.home_menu_tickets), onOpenTickets, Modifier.weight(1f))
+                            if (business.enabled("purchase")) DashboardAction(stringResource(R.string.home_menu_plans), onOpenPlans, Modifier.weight(1f))
+                            if (business.enabled("tickets")) DashboardAction(stringResource(R.string.home_menu_tickets), onOpenTickets, Modifier.weight(1f))
                         }
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             DashboardAction(stringResource(R.string.home_menu_orders), onOpenOrders, Modifier.weight(1f))
-                            DashboardAction(stringResource(R.string.home_menu_notices), onOpenNotices, Modifier.weight(1f))
+                            DashboardAction("我的账户", onOpenAccount, Modifier.weight(1f))
+                            if (business.enabled("notice")) DashboardAction(stringResource(R.string.home_menu_notices), onOpenNotices, Modifier.weight(1f))
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                            if (business.enabled("custom_rules")) DashboardAction("自定义分流", onOpenRules, Modifier.weight(1f))
+                            DashboardAction(if (business.unread > 0) "客服 · ${business.unread} 条未读" else "在线客服", onOpenSupport, Modifier.weight(1f))
                         }
                     }
                 }
@@ -194,9 +209,9 @@ private fun ProtonTrafficCard(sub: SubscribeInfo, plan: String?, onCopy: () -> U
     val used = sub.upload + sub.download
     val ratio = if (total == 0UL) 0f else (used.toFloat() / total.toFloat()).coerceIn(0f, 1f)
     Surface(
-        color = Color(0xCC1C1726.toInt()),
+        color = Color(0xFFFDFDFF),
         shape = RoundedCornerShape(20.dp),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+        border = BorderStroke(1.dp, Color(0xFFECECF3)),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -206,32 +221,32 @@ private fun ProtonTrafficCard(sub: SubscribeInfo, plan: String?, onCopy: () -> U
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFF006D52)) {
+                    Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFFE3F5EF)) {
                         Icon(
                             Icons.Default.Bolt,
                             contentDescription = null,
-                            tint = Color(0xFF00E0A7),
+                            tint = Color(0xFF279A84),
                             modifier = Modifier.padding(7.dp).size(18.dp),
                         )
                     }
-                    Text("流量使用", color = Color.White, fontWeight = FontWeight.Bold)
+                    Text("流量使用", color = Color(0xFF242539), fontWeight = FontWeight.Bold)
                 }
                 IconButton(onClick = onCopy) {
-                    Icon(Icons.Default.ContentCopy, contentDescription = stringResource(R.string.home_copy), tint = Color(0xFFC9C1D8))
+                    Icon(Icons.Default.ContentCopy, contentDescription = stringResource(R.string.home_copy), tint = Color(0xFF858697))
                 }
             }
             LinearProgressIndicator(
                 progress = { ratio },
                 modifier = Modifier.fillMaxWidth().height(8.dp).clip(CircleShape),
-                color = Color(0xFF7C5CFF),
-                trackColor = Color.White.copy(alpha = 0.12f),
+                color = Color(0xFF7165E9),
+                trackColor = Color(0xFFECEAF8),
             )
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text("${stringResource(R.string.home_used)} ${formatBytes(used)}", color = Color(0xFFEDE8F7))
-                Text("${stringResource(R.string.home_total)} ${formatBytes(total)}", color = Color(0xFFEDE8F7))
+                Text("${stringResource(R.string.home_used)} ${formatBytes(used)}", color = Color(0xFF242539))
+                Text("${stringResource(R.string.home_total)} ${formatBytes(total)}", color = Color(0xFF242539))
             }
             plan?.let {
-                Text(it, color = Color(0xFF00D09C), style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(it, color = Color(0xFF279A84), style = MaterialTheme.typography.labelLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
     }
@@ -248,13 +263,13 @@ private fun SelectedServerCard(
     onToggle: () -> Unit,
 ) {
     Surface(
-        color = Color(0xDD171320),
+        color = Color(0xFFFFFFFF),
         shape = RoundedCornerShape(22.dp),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)),
+        border = BorderStroke(1.dp, Color(0xFFECECF3)),
         modifier = Modifier.fillMaxWidth(),
     ) {
         Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text("当前选择", color = Color(0xFF9E96AE), style = MaterialTheme.typography.labelLarge)
+            Text("当前选择", color = Color(0xFF858697), style = MaterialTheme.typography.labelLarge)
             Row(
                 modifier = Modifier.fillMaxWidth().clickable(onClick = onPickNode),
                 verticalAlignment = Alignment.CenterVertically,
@@ -263,7 +278,7 @@ private fun SelectedServerCard(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = node ?: "最快服务器",
-                        color = Color.White,
+                        color = Color(0xFF242539),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.ExtraBold,
                         maxLines = 1,
@@ -271,13 +286,13 @@ private fun SelectedServerCard(
                     )
                     Text(
                         text = route ?: location?.let { "${it.flag} ${it.country} · ${it.label}" } ?: "自动选择最优节点",
-                        color = Color(0xFFC9C1D8),
+                        color = Color(0xFF858697),
                         style = MaterialTheme.typography.bodySmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Text("›", color = Color(0xFFC9C1D8), style = MaterialTheme.typography.headlineSmall)
+                Text("›", color = Color(0xFF858697), style = MaterialTheme.typography.headlineSmall)
             }
             Surface(
                 onClick = { if (!connecting) onToggle() },
@@ -288,7 +303,7 @@ private fun SelectedServerCard(
                     .fillMaxWidth()
                     .height(58.dp)
                     .background(
-                        Brush.horizontalGradient(listOf(Color(0xFF7C5CFF), Color(0xFF00A978))),
+                        Brush.horizontalGradient(listOf(Color(0xFF7165E9), Color(0xFF978BED))),
                         RoundedCornerShape(14.dp),
                     ),
             ) {
@@ -316,11 +331,11 @@ private fun DashboardAction(label: String, onClick: () -> Unit, modifier: Modifi
         modifier = modifier.height(48.dp),
         onClick = onClick,
         shape = RoundedCornerShape(14.dp),
-        color = Color.White.copy(alpha = 0.08f),
-        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.08f)),
+        color = Color(0xFFECECF3),
+        border = BorderStroke(1.dp, Color(0xFFECECF3)),
     ) {
         Box(contentAlignment = Alignment.Center) {
-            Text(label, color = Color.White, fontWeight = FontWeight.Bold)
+            Text(label, color = Color(0xFF242539), fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -331,8 +346,8 @@ private fun WorldMapCanvas(pins: List<MapPin>, modifier: Modifier = Modifier) {
         val w = size.width
         val h = size.height
         val stroke = Stroke(width = 1.2.dp.toPx())
-        val landColor = Color(0x66100D16)
-        val lineColor = Color.White.copy(alpha = 0.18f)
+        val landColor = Color(0x447165E9)
+        val lineColor = Color(0x227165E9)
 
         fun path(points: List<Pair<Float, Float>>) = Path().apply {
             points.firstOrNull()?.let { moveTo(it.first * w, it.second * h) }
@@ -361,7 +376,7 @@ private fun WorldMapCanvas(pins: List<MapPin>, modifier: Modifier = Modifier) {
         pins.forEach { pin ->
             val x = w * pin.x / 100f
             val y = h * pin.y / 100f
-            val color = if (pin.active) Color(0xFF00D09C) else Color(0xFFFF4057)
+            val color = if (pin.active) Color(0xFF279A84) else Color(0xFFFF4057)
             drawCircle(color.copy(alpha = 0.20f), radius = if (pin.active) 22.dp.toPx() else 15.dp.toPx(), center = Offset(x, y))
             drawCircle(color, radius = if (pin.active) 6.dp.toPx() else 4.dp.toPx(), center = Offset(x, y))
             if (pin.active) {

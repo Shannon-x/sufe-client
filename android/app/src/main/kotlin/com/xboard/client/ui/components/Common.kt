@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -98,7 +99,7 @@ fun LabeledTextField(
         onValueChange = onValueChange,
         label = { Text(label) },
         modifier = modifier.fillMaxWidth(),
-        singleLine = !isPassword || true,  // password is also single-line
+        singleLine = true,
         visualTransformation = if (isPassword) PasswordVisualTransformation() else VisualTransformation.None,
         keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
         isError = isError,
@@ -146,12 +147,14 @@ fun ScrollableColumn(
     content: @Composable () -> Unit,
 ) {
     val scroll = rememberScrollState()
+    Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
     Column(
-        modifier = modifier.verticalScroll(scroll).fillMaxSize().padding(16.dp),
+        modifier = Modifier.widthIn(max = 680.dp).fillMaxWidth().verticalScroll(scroll).padding(20.dp),
         horizontalAlignment = horizontalAlignment,
         verticalArrangement = verticalArrangement,
     ) {
         content()
+    }
     }
 }
 

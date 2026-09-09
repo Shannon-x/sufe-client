@@ -33,6 +33,7 @@ case "${PROFILE}" in
 esac
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+source "${REPO_ROOT}/ci/scripts/verify-download.sh"
 DEST="${REPO_ROOT}/desktop/src-tauri/binaries"
 mkdir -p "${DEST}"
 
@@ -70,19 +71,15 @@ case "${TRIPLE}" in
     *) echo "unsupported triple for wintun: ${TRIPLE}" >&2; exit 3 ;;
 esac
 
-if [[ -f "${WINTUN_DEST}" ]]; then
-    echo "  wintun.dll already present → ${WINTUN_DEST} (delete to refresh)"
+TMP="$(mktemp -d)"
+trap 'rm -rf "${TMP}"' EXIT
+echo "→ fetch wintun ${WINTUN_VERSION} from ${WINTUN_ZIP_URL}"
+curl -fsSL "${WINTUN_ZIP_URL}" -o "${TMP}/wintun.zip"
+verify_download "wintun-${WINTUN_VERSION}" "wintun-${WINTUN_VERSION}.zip" "${TMP}/wintun.zip"
+if command -v unzip >/dev/null 2>&1; then
+    unzip -j -o "${TMP}/wintun.zip" "${WINTUN_INNER}" -d "${DEST}"
 else
-    TMP="$(mktemp -d)"
-    trap 'rm -rf "${TMP}"' EXIT
-    echo "→ fetch wintun ${WINTUN_VERSION} from ${WINTUN_ZIP_URL}"
-    curl -fsSL "${WINTUN_ZIP_URL}" -o "${TMP}/wintun.zip"
-    # Use bsdtar (built in to git-bash on Windows) to extract a single file.
-    if command -v unzip >/dev/null 2>&1; then
-        unzip -j -o "${TMP}/wintun.zip" "${WINTUN_INNER}" -d "${DEST}"
-    else
-        tar -xf "${TMP}/wintun.zip" -C "${TMP}" "${WINTUN_INNER}"
-        cp "${TMP}/${WINTUN_INNER}" "${WINTUN_DEST}"
-    fi
-    echo "  installed → ${WINTUN_DEST}"
+    tar -xf "${TMP}/wintun.zip" -C "${TMP}" "${WINTUN_INNER}"
+    cp "${TMP}/${WINTUN_INNER}" "${WINTUN_DEST}"
 fi
+echo "  installed → ${WINTUN_DEST}"

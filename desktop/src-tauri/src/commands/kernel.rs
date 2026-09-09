@@ -22,6 +22,8 @@ const DEFAULT_LOG_TAIL_BYTES: u64 = 64 * 1024;
 
 #[derive(Serialize, Clone)]
 pub struct KernelHealth {
+    /// Whether the current release can safely start a privileged desktop TUN.
+    pub tun_supported: bool,
     /// True when the bundled `mihomo` sidecar exists on disk. False here
     /// is a critical install error (corrupted bundle / antivirus removed).
     pub mihomo_present: bool,
@@ -62,15 +64,14 @@ pub async fn kernel_health(
         let present = tokio::fs::try_exists(&path).await.unwrap_or(false);
         (Some(present), Some(path.display().to_string()))
     };
-    // Linux: probe the file capability on the bundled mihomo. Set by the
-    // deb/rpm postinst (build_extras/postinst.sh); absent on AppImage and
-    // on dev-mode runs from a target/ directory. We surface the path here
-    // too so the UI's "no TUN" hint can show the user exactly which
-    // binary is missing the capability.
+    // Linux: use the same ownership/hash/capability checks as the launcher.
+    // AppImage can acquire a protected copy through first-connect polkit auth.
     #[cfg(target_os = "linux")]
     let (helper_present, helper_path) = {
-        let present = xboard_core::kernel::linux_caps::has_file_capability(&mihomo_path);
-        (Some(present), Some(mihomo_path.display().to_string()))
+        let bundled = mihomo_path.clone();
+        let ready = tokio::task::spawn_blocking(move || crate::linux_launcher::ready_kernel(&bundled))
+            .await.unwrap_or(None);
+        (Some(ready.is_some()), Some(ready.unwrap_or_else(|| PathBuf::from(crate::linux_launcher::MANAGED_KERNEL)).display().to_string()))
     };
     // Windows: SCM lookup. `is_registered` is sync, so push it off the
     // tauri thread; failure to query is treated as "not present" so the UI
@@ -88,6 +89,8 @@ pub async fn kernel_health(
     let (helper_present, helper_path) = (None::<bool>, None::<String>);
 
     Ok(KernelHealth {
+        tun_supported: cfg!(target_os = "linux")
+            || xboard_core::kernel::launcher::PRIVILEGED_LAUNCH_ENABLED,
         mihomo_present,
         mihomo_path: mihomo_path.display().to_string(),
         helper_present,
@@ -168,10 +171,13 @@ pub async fn kernel_version(app: AppHandle) -> CommandResult<KernelVersion> {
         ));
     }
 
-    let output = Command::new(&mihomo_path)
-        .arg("-v")
-        .output()
+    let mut command = Command::new(&mihomo_path);
+    command.arg("-v").kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(5), command.output())
         .await
+        .map_err(|_| CommandError::new("mihomo_exec", "读取内核版本超时"))?
         .map_err(|e| CommandError::new("mihomo_exec", format!("mihomo -v: {e}")))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();

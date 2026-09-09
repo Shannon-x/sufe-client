@@ -18,47 +18,57 @@ name: Release Desktop
 #     secret and the public key into tauri.conf.json.
 
 on:
+  release:
+    types: [published]
   push:
     tags:
       - 'v*'
   workflow_dispatch:
     inputs:
       mihomo_version:
-        description: 'mihomo kernel release tag (e.g. v1.18.7)'
+        description: 'mihomo kernel release tag (e.g. v1.19.30)'
         required: false
-        default: 'v1.18.7'
+        default: 'v1.19.30'
 
 permissions:
   contents: write
 
 env:
   CI: 'true'
-  MIHOMO_VERSION: ${{ github.event.inputs.mihomo_version || vars.MIHOMO_VERSION || 'v1.18.7' }}
+  SUFE_DEPLOYMENT_JSON: ${{ secrets.SUFE_DEPLOYMENT_JSON }}
+  MIHOMO_VERSION: ${{ github.event.inputs.mihomo_version || vars.MIHOMO_VERSION || 'v1.19.30' }}
 
 jobs:
   build:
+    if: github.event_name != 'release'
     name: Build (${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: aarch64-apple-darwin
-            os: macos-latest
-          # Cross-compile Intel from the same Apple Silicon runner — macos-13
-          # x86_64 runners have a persistent multi-hour queue, and cross-build
-          # via `rustup target add x86_64-apple-darwin` is supported out of
-          # the box on macOS arm64 hosts.
+            os: macos-14
+            bundles: app,dmg
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-15-intel
+            bundles: app,dmg
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            bundles: nsis
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
+            bundles: deb,appimage
     runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Require updater signing key
+        shell: bash
+        env:
+          SIGNING_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: test -n "${SIGNING_KEY}" || { echo '::error::TAURI_SIGNING_PRIVATE_KEY is required'; exit 1; }
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -76,12 +86,12 @@ jobs:
             librsvg2-dev \
             libssl-dev \
             libdbus-1-dev \
-            pkg-config
+            pkg-config libfuse2 patchelf xdg-utils file libcap2-bin
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
           cache-dependency-path: desktop/package-lock.json
 
@@ -135,19 +145,22 @@ jobs:
 
             Download the asset matching your platform below.
 
-            > 首次安装提示：macOS 用户右键点击 .dmg → 打开（绕过 Gatekeeper）；
-            > Windows 用户在 SmartScreen 提示界面点 "更多信息" → "仍要运行"。
-            > 这两步只在首次安装时出现，自动更新走 Tauri 内置 ed25519 校验。
+            Review platform signing, notarization and VPN compatibility before publishing.
+            Updater signatures verify updates; they do not replace operating-system code signing.
 
             <!-- Update notes here before publishing the draft. -->
           releaseDraft: true
           prerelease: false
-          args: --target ${{ matrix.target }}
+          args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} -- --locked
 
   # ---------------- Publish gh-pages manifest ----------------
   publish-desktop-manifest:
     name: Publish desktop manifest
     needs: build
+    if: always() && github.event_name == 'release'
+    concurrency:
+      group: publish-update-manifests
+      cancel-in-progress: false
     runs-on: ubuntu-22.04
     permissions:
       contents: write
@@ -162,6 +175,11 @@ jobs:
           bash ci/scripts/build-desktop-manifest.sh \
             "${GITHUB_REF_NAME}" \
             "_publish/desktop/latest.json"
+
+      - name: Publish fallback release manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" _publish/desktop/latest.json --clobber
 
       - name: Checkout gh-pages
         uses: actions/checkout@v4
@@ -183,10 +201,10 @@ jobs:
       - name: Stage manifest + landing page
         run: |
           mkdir -p gh-pages/desktop
-          cp _publish/desktop/latest.json gh-pages/desktop/latest.json
           if [ -d update-server/dist ]; then
             cp -R update-server/dist/. gh-pages/
           fi
+          cp _publish/desktop/latest.json gh-pages/desktop/latest.json
 
       - name: Commit & push gh-pages
         env:

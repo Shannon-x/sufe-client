@@ -38,6 +38,8 @@ pub struct ConnectionManager {
     /// Host TUN factory (Android VpnService / iOS NE). When present, `connect`
     /// asks it for a fd and feeds it to the kernel manager; `None` on desktop.
     tun_delegate: Option<Arc<dyn TunDelegate>>,
+    operation: Arc<tokio::sync::Mutex<()>>,
+    runtime: tokio::runtime::Handle,
 }
 
 impl ConnectionManager {
@@ -78,15 +80,55 @@ impl ConnectionManager {
         // method synchronously (no `.await`) — and we want the fanout to see
         // every state change, not only those that happen after a subscriber
         // joined.
+        let tun_delegate: Option<Arc<dyn TunDelegate>> = tun_delegate.map(Arc::from);
+        let delegate_for_state = tun_delegate.clone();
+        let operation = Arc::new(tokio::sync::Mutex::new(()));
+        let operation_for_state = operation.clone();
+        let inner_for_state = inner.clone();
         let mut stream = inner.subscribe_state();
         let fanout_clone = fanout.clone();
-        let task = tokio::spawn(async move {
+        // UniFFI constructors run synchronously on the Kotlin/Swift caller,
+        // outside a Tokio context. Spawning directly here used to panic on
+        // the first Android connection. Keep a process-lifetime fallback.
+        static MOBILE_RUNTIME: once_cell::sync::OnceCell<tokio::runtime::Runtime> =
+            once_cell::sync::OnceCell::new();
+        let runtime = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => handle,
+            Err(_) => MOBILE_RUNTIME
+                .get_or_try_init(|| {
+                    tokio::runtime::Builder::new_multi_thread()
+                        .worker_threads(2)
+                        .enable_all()
+                        .thread_name("sufe-mobile")
+                        .build()
+                })
+                .map_err(|e| FfiError::Io(e.to_string()))?
+                .handle()
+                .clone(),
+        };
+        let task = runtime.spawn(async move {
             while let Some(state) = stream.next().await {
+                if matches!(
+                    state,
+                    crate::kernel::manager::ConnectionState::Error { .. }
+                        | crate::kernel::manager::ConnectionState::Disconnected
+                ) {
+                    let _operation = operation_for_state.lock().await;
+                    // An older failure event must never close a newer VPN.
+                    if matches!(
+                        inner_for_state.state(),
+                        crate::kernel::manager::ConnectionState::Error { .. }
+                            | crate::kernel::manager::ConnectionState::Disconnected
+                    ) {
+                        if let Some(delegate) = &delegate_for_state {
+                            delegate.close_tun();
+                        }
+                        inner_for_state.set_tun_fd(None);
+                    }
+                }
                 fanout_clone.emit(FfiConnectionState::from(state));
             }
         });
-
-        let tun_delegate: Option<Arc<dyn TunDelegate>> = tun_delegate.map(Arc::from);
 
         Ok(Self {
             client,
@@ -94,6 +136,8 @@ impl ConnectionManager {
             fanout,
             fanout_task: Mutex::new(Some(task)),
             tun_delegate,
+            operation,
+            runtime,
         })
     }
 
@@ -111,10 +155,25 @@ impl ConnectionManager {
     }
 
     pub async fn connect(&self) -> Result<(), FfiError> {
+        let _operation = self.operation.lock().await;
+        if matches!(
+            self.inner.state(),
+            crate::kernel::manager::ConnectionState::Connected { .. }
+        ) {
+            return Ok(());
+        }
+        self.client.require_session()?;
+        let generation = self.client.generation();
+        let custom_rules = self.client.rules_for_connection().await?;
+        self.inner.set_custom_rules(custom_rules).await?;
         // Fetch the active subscribe URL. The bearer is set on the shared
         // HTTP client at login / hydrate, so this works without any extra
         // wiring as long as the caller is authenticated.
         let info = self.client.http_client().user_subscribe().await?;
+        self.client.require_session()?;
+        if self.client.generation() != generation {
+            return Err(FfiError::Unauthorized);
+        }
 
         // Mobile: have the host stand up the VpnService / NE tunnel and give
         // us its fd, then tell the kernel manager to adopt it. Without this
@@ -123,6 +182,12 @@ impl ConnectionManager {
         if let Some(delegate) = self.tun_delegate.as_ref() {
             if matches!(self.requested_mode(), TunnelMode::Tun) {
                 let fd = delegate.establish_tun(default_tun_config())?;
+                if fd < 3 {
+                    delegate.close_tun();
+                    return Err(FfiError::Kernel(
+                        "VPN service returned an invalid TUN descriptor".into(),
+                    ));
+                }
                 self.inner.set_tun_fd(Some(fd));
             }
         }
@@ -136,19 +201,31 @@ impl ConnectionManager {
             }
             return Err(e.into());
         }
-        Ok(())
-    }
-
-    pub async fn disconnect(&self) -> Result<(), FfiError> {
-        self.inner.disconnect().await?;
-        if let Some(delegate) = self.tun_delegate.as_ref() {
-            delegate.close_tun();
+        if self.client.require_session().is_err() || self.client.generation() != generation {
+            let _ = self.inner.disconnect().await;
+            if let Some(delegate) = &self.tun_delegate {
+                delegate.close_tun();
+            }
             self.inner.set_tun_fd(None);
+            return Err(FfiError::Unauthorized);
         }
         Ok(())
     }
 
+    pub async fn disconnect(&self) -> Result<(), FfiError> {
+        let _operation = self.operation.lock().await;
+        let result = self.inner.disconnect().await;
+        if let Some(delegate) = self.tun_delegate.as_ref() {
+            delegate.close_tun();
+            self.inner.set_tun_fd(None);
+        }
+        result.map_err(Into::into)
+    }
+
     pub fn set_tunnel_mode(&self, mode: TunnelMode) -> Result<(), FfiError> {
+        if self.tun_delegate.is_some() && matches!(mode, TunnelMode::SystemProxy) {
+            return Err(FfiError::Config("移动端仅支持 VPN 隧道模式".into()));
+        }
         self.inner.set_requested_mode(mode.into());
         Ok(())
     }
@@ -186,7 +263,7 @@ impl ConnectionManager {
 /// `VpnService.Builder` / `NEPacketTunnelNetworkSettings`.
 fn default_tun_config() -> TunConfig {
     TunConfig {
-        session: "Xboard".to_string(),
+        session: "Sufe".to_string(),
         ipv4_addr: "172.19.0.1".to_string(),
         ipv4_prefix: 30,
         routes: vec!["0.0.0.0/0".to_string()],
@@ -200,5 +277,60 @@ impl Drop for ConnectionManager {
         if let Some(task) = self.fanout_task.lock().take() {
             task.abort();
         }
+        let inner = self.inner.clone();
+        let delegate = self.tun_delegate.clone();
+        self.runtime.spawn(async move {
+            let _ = inner.disconnect().await;
+            if let Some(delegate) = delegate {
+                delegate.close_tun();
+            }
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ffi::{SecureStore, StorageError};
+
+    #[derive(Debug)]
+    struct EmptyStore;
+    impl SecureStore for EmptyStore {
+        fn get(&self, _: String) -> std::result::Result<Option<String>, StorageError> {
+            Ok(None)
+        }
+        fn put(&self, _: String, _: String) -> std::result::Result<(), StorageError> {
+            Ok(())
+        }
+        fn delete(&self, _: String) -> std::result::Result<(), StorageError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn synchronous_mobile_constructor_does_not_require_a_tokio_context() {
+        assert!(tokio::runtime::Handle::try_current().is_err());
+        let client = Arc::new(
+            Client::new(
+                "https://example.invalid".into(),
+                "zh-CN".into(),
+                Box::new(EmptyStore),
+            )
+            .unwrap(),
+        );
+        let path = std::env::temp_dir().join(format!("sufe-ffi-{}", uuid::Uuid::new_v4()));
+        let manager = ConnectionManager::new(
+            client,
+            path.join("mihomo").to_string_lossy().into(),
+            path.to_string_lossy().into(),
+            path.join("cache").to_string_lossy().into(),
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            manager.current_state(),
+            FfiConnectionState::Disconnected
+        ));
+        drop(manager);
     }
 }

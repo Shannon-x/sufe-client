@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 
 use once_cell::sync::OnceCell;
@@ -19,7 +20,6 @@ use crate::persistence::Persistence;
 /// Process-wide state. Held inside a `tauri::State<AppState>` and shared
 /// across all commands. Both fields are guarded by sync `RwLock`s — locks
 /// MUST be dropped before any `.await`.
-#[derive(Default)]
 pub struct AppState {
     pub client: RwLock<Option<HttpClient>>,
     pub auth: RwLock<Option<AuthSession>>,
@@ -41,6 +41,26 @@ pub struct AppState {
     /// exists. `None` = use the manager default (enabled); `Some(b)` = the
     /// user toggled it. Applied to the manager in `ensure_kernel`.
     pub proxy_guard_enabled: RwLock<Option<bool>>,
+    /// Serialize process lifecycle commands; cancellation invalidates work
+    /// already awaiting a subscription or kernel startup.
+    pub connection_lock: Arc<tokio::sync::Mutex<()>>,
+    pub connection_generation: AtomicU64,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        Self {
+            client: RwLock::new(None),
+            auth: RwLock::new(None),
+            requested_mode: RwLock::new(TunnelMode::Tun),
+            kernel: OnceCell::new(),
+            persistence: OnceCell::new(),
+            secure: OnceCell::new(),
+            proxy_guard_enabled: RwLock::new(None),
+            connection_lock: Arc::new(tokio::sync::Mutex::new(())),
+            connection_generation: AtomicU64::new(0),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -76,42 +96,42 @@ impl AppState {
     /// fallback errors so the manager downgrades to system proxy on
     /// Windows/macOS until those crates ship).
     pub fn ensure_kernel(&self, app: &AppHandle) -> Result<Arc<KernelManager>, CommandError> {
-        if let Some(km) = self.kernel.get() {
-            return Ok(km.clone());
-        }
+        let manager =
+            self.kernel
+                .get_or_try_init(|| -> Result<Arc<KernelManager>, CommandError> {
+                    let binary_path = resolve_mihomo_path(app)?;
+                    let app_data = app
+                        .path()
+                        .app_data_dir()
+                        .map_err(|e| CommandError::new("app_data_dir", e.to_string()))?;
+                    let work_dir: PathBuf = app_data.join("kernel");
+                    let cache_dir: PathBuf = app_data.join("profiles");
 
-        let binary_path = resolve_mihomo_path(app)?;
-        let app_data = app
-            .path()
-            .app_data_dir()
-            .map_err(|e| CommandError::new("app_data_dir", e.to_string()))?;
-        let work_dir: PathBuf = app_data.join("kernel");
-        let cache_dir: PathBuf = app_data.join("profiles");
+                    let driver = Arc::new(MihomoDriver::new());
+                    let launcher: Arc<dyn KernelLauncher> = pick_launcher(app, &binary_path);
 
-        let driver = Arc::new(MihomoDriver::new());
-        let launcher: Arc<dyn KernelLauncher> = pick_launcher(app, &binary_path);
+                    let http = self.snapshot_client().ok_or_else(|| {
+                        CommandError::new("not_initialized", "请先选择后端服务地址")
+                    })?;
+                    let fetcher = ProfileFetcher::new(http, cache_dir);
 
-        let http = self
-            .snapshot_client()
-            .ok_or_else(|| CommandError::new("not_initialized", "请先选择后端服务地址"))?;
-        let fetcher = ProfileFetcher::new(http, cache_dir);
+                    let proxy_setter = Some(Arc::new(DefaultSystemProxy) as Arc<_>);
 
-        let proxy_setter = Some(Arc::new(DefaultSystemProxy) as Arc<_>);
-
-        let manager = Arc::new(KernelManager::new(
-            driver,
-            launcher,
-            proxy_setter,
-            fetcher,
-            binary_path,
-            work_dir,
-        ));
-        manager.set_requested_mode(*self.requested_mode.read());
-        if let Some(g) = *self.proxy_guard_enabled.read() {
-            manager.set_proxy_guard_enabled(g);
-        }
-        let _ = self.kernel.set(manager.clone());
-        Ok(manager)
+                    let manager = Arc::new(KernelManager::new(
+                        driver,
+                        launcher,
+                        proxy_setter,
+                        fetcher,
+                        binary_path,
+                        work_dir,
+                    ));
+                    manager.set_requested_mode(*self.requested_mode.read());
+                    if let Some(g) = *self.proxy_guard_enabled.read() {
+                        manager.set_proxy_guard_enabled(g);
+                    }
+                    Ok(manager)
+                })?;
+        Ok(manager.clone())
     }
 }
 
@@ -132,8 +152,7 @@ fn pick_launcher(app: &AppHandle, binary_path: &std::path::Path) -> Arc<dyn Kern
     #[cfg(target_os = "linux")]
     {
         let _ = app;
-        use xboard_core::DirectLauncher;
-        Arc::new(DirectLauncher::new().with_binary_hint(binary_path.to_path_buf()))
+        Arc::new(crate::linux_launcher::LinuxManagedLauncher::new(binary_path.to_path_buf()))
     }
     #[cfg(target_os = "windows")]
     {

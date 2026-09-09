@@ -1,274 +1,89 @@
 import SwiftUI
 
-private enum PurchasePhase: Equatable {
-    case form
-    case submitting
-    case awaitingGateway(tradeNo: String, redirect: String?)
-    case balancePaid(tradeNo: String)
-    case status(tradeNo: String, statusInt: Int32?)
-}
-
+/// Creating an order and authorising its payment are separate, reviewable steps.
+@MainActor
 struct PurchaseSheet: View {
     @Bindable var model: AppModel
     let plan: Plan
     @Environment(\.dismiss) private var dismiss
-
     @State private var period: PeriodOption?
     @State private var coupon = ""
-    @State private var methodId: Int64?
-    @State private var phase: PurchasePhase = .form
-    @State private var localError: String?
+    @State private var working = false
+    @State private var error: String?
+    @State private var tradeNo: String?
+    @State private var uncertain = false
 
     var body: some View {
         NavigationStack {
             Group {
-                switch phase {
-                case .form:
-                    formSection
-                case .submitting:
-                    ProgressView()
-                case let .awaitingGateway(tradeNo, redirect):
-                    gatewaySection(tradeNo: tradeNo, redirect: redirect)
-                case let .balancePaid(tradeNo):
-                    paidSection(tradeNo: tradeNo)
-                case let .status(tradeNo, statusInt):
-                    statusSection(tradeNo: tradeNo, statusInt: statusInt)
-                }
-            }
-            .navigationTitle(plan.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(String(localized: "common.close")) { dismiss() }
-                }
-            }
-            .task {
-                await model.refreshPlans()
-                if period == nil { period = collectPeriods(plan).first }
-                if methodId == nil { methodId = model.paymentMethods?.first?.id }
-            }
-        }
-    }
-
-    // ---------- form ----------
-
-    private var formSection: some View {
-        Form {
-            Section(String(localized: "purchase.section.period")) {
-                ForEach(collectPeriods(plan)) { p in
-                    HStack {
-                        Image(systemName: period?.id == p.id ? "largecircle.fill.circle" : "circle")
-                            .foregroundStyle(.tint)
-                        Text(p.labelKey)
-                        Spacer()
-                        Text(formatPriceCents(p.priceCents))
-                            .foregroundStyle(.secondary)
-                    }
-                    .contentShape(Rectangle())
-                    .onTapGesture { period = p }
-                }
-            }
-
-            Section(String(localized: "purchase.section.coupon")) {
-                TextField(String(localized: "purchase.coupon.placeholder"), text: $coupon)
-                    .textInputAutocapitalization(.never)
-                    .autocorrectionDisabled()
-            }
-
-            Section(String(localized: "purchase.section.payment")) {
-                if let methods = model.paymentMethods {
-                    ForEach(methods, id: \.id) { method in
-                        PaymentMethodRow(method: method, isSelected: methodId == method.id) {
-                            methodId = method.id
+                if let tradeNo {
+                    OrderPaymentView(model: model, tradeNo: tradeNo)
+                } else if !model.clientFeatures.enabled("purchase") {
+                    ContentUnavailableView("订阅购买暂未开放", systemImage: "creditcard")
+                } else {
+                    Form {
+                        Section("选择订阅周期") {
+                            ForEach(collectPeriods(plan, currentPlanId: model.subscribe?.planId)) { option in
+                                Button {
+                                    period = option
+                                } label: {
+                                    HStack {
+                                        Image(systemName: period?.id == option.id ? "largecircle.fill.circle" : "circle")
+                                        Text(option.labelKey).foregroundStyle(.primary)
+                                        Spacer()
+                                        Text(formatPriceCents(option.priceCents)).foregroundStyle(.secondary)
+                                    }
+                                }.disabled(working || uncertain)
+                            }
+                        }
+                        Section("优惠码（选填）") {
+                            TextField("输入优惠码", text: $coupon).textInputAutocapitalization(.never)
+                                .autocorrectionDisabled().disabled(working || uncertain)
+                        }
+                        Section {
+                            Text("下一步会生成订单，展示优惠、余额抵扣和服务端实际应付金额，再由你确认付款。")
+                                .font(.caption).foregroundStyle(.secondary)
+                            if let error { Text(error).font(.caption).foregroundStyle(.red) }
+                            if uncertain {
+                                NavigationLink("前往订单检查结果") { OrdersView(model: model) }
+                                Text("这次请求的结果尚未确认，请先检查订单，避免重复下单。")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            } else {
+                                Button(working ? "正在生成订单…" : "下一步 · 核对订单") { createOrder() }
+                                    .disabled(period == nil || working)
+                            }
                         }
                     }
-                } else {
-                    ProgressView()
                 }
             }
-
-            if let err = localError {
-                Section { Text(err).foregroundStyle(.red) }
-            }
-
-            Section {
-                Button(action: submit) {
-                    Text(String(localized: "purchase.submit"))
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(period == nil || methodId == nil)
-            }
+            .navigationTitle(plan.name).navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("关闭") { dismiss() }.disabled(working) } }
+            .onAppear { if period == nil { period = collectPeriods(plan, currentPlanId: model.subscribe?.planId).first } }
         }
     }
 
-    // ---------- gateway / balance / status ----------
-
-    private func gatewaySection(tradeNo: String, redirect: String?) -> some View {
-        VStack(spacing: 16) {
-            Text(String(localized: "purchase.gateway.title"))
-                .font(.headline)
-            if let url = redirect, let parsed = URL(string: url) {
-                Link(destination: parsed) {
-                    Text(String(localized: "purchase.gateway.open"))
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                Text(url).font(.caption).foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            } else {
-                Text(String(localized: "purchase.gateway.no_redirect"))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-            HStack {
-                Button(String(localized: "purchase.gateway.refresh")) {
-                    Task { await refreshStatus(tradeNo: tradeNo) }
-                }
-                Spacer()
-                Button(String(localized: "purchase.gateway.cancel")) {
-                    Task {
-                        await model.cancelOrder(tradeNo)
-                        phase = .form
-                    }
-                }
-            }
-            Spacer()
-        }
-        .screenPadding()
-    }
-
-    private func paidSection(tradeNo: String) -> some View {
-        VStack(spacing: 16) {
-            Image(systemName: "checkmark.seal.fill")
-                .font(.system(size: 56))
-                .foregroundStyle(.green)
-            Text(String(localized: "purchase.paid.title"))
-                .font(.headline)
-            Text(tradeNo).font(.caption).foregroundStyle(.secondary)
-            Button(String(localized: "common.ok")) { dismiss() }
-                .buttonStyle(.borderedProminent)
-        }
-        .screenPadding()
-    }
-
-    private func statusSection(tradeNo: String, statusInt: Int32?) -> some View {
-        VStack(spacing: 16) {
-            ProgressView()
-            Text(statusInt.map { statusText($0) } ?? String(localized: "purchase.status.checking"))
-            Button(String(localized: "purchase.gateway.refresh")) {
-                Task { await refreshStatus(tradeNo: tradeNo) }
-            }
-            Button(String(localized: "common.close")) { dismiss() }
-        }
-        .screenPadding()
-    }
-
-    // ---------- actions ----------
-
-    private func submit() {
-        guard let p = period, let m = methodId else { return }
-        localError = nil
-        phase = .submitting
+    private func createOrder() {
+        guard let period, !working, !uncertain else { return }
+        working = true; error = nil
+        let generation = model.authGeneration
         Task {
+            defer { working = false }
             do {
-                let tradeNo = try await model.saveOrder(SaveOrderArgs(
-                    planId: plan.id,
-                    period: p.key,
-                    couponCode: coupon.isEmpty ? nil : coupon
-                ))
-                let resp = try await model.checkout(tradeNo, methodId: m)
-                switch resp.kind {
-                case 1:
-                    phase = .awaitingGateway(tradeNo: tradeNo, redirect: extractURL(resp.dataJson))
-                case 0:
-                    phase = .awaitingGateway(tradeNo: tradeNo, redirect: extractURL(resp.dataJson))
-                case -2:
-                    phase = .awaitingGateway(tradeNo: tradeNo, redirect: nil)
-                default:
-                    phase = .balancePaid(tradeNo: tradeNo)
-                }
+                let result = try await model.saveOrder(SaveOrderArgs(planId: plan.id, period: period.key, couponCode: coupon.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : coupon.trimmingCharacters(in: .whitespacesAndNewlines)))
+                guard generation == model.authGeneration else { return }
+                tradeNo = result
             } catch {
-                localError = String(describing: error)
-                phase = .form
+                guard generation == model.authGeneration else { return }
+                self.error = model.friendly(error)
+                // The request may have reached the server. Retrying a POST is
+                // deliberately not automatic, even when the gateway timed out.
+                if let ffi = error as? FfiError {
+                    switch ffi {
+                    case .ApiFailure, .Unauthorized, .Config: uncertain = false
+                    default: uncertain = true
+                    }
+                } else { uncertain = true }
             }
         }
-    }
-
-    private func refreshStatus(tradeNo: String) async {
-        do {
-            let s = try await model.checkOrderStatus(tradeNo)
-            if s == 2 || s == 3 {
-                phase = .balancePaid(tradeNo: tradeNo)
-            } else {
-                phase = .status(tradeNo: tradeNo, statusInt: s)
-            }
-        } catch {
-            localError = String(describing: error)
-        }
-    }
-
-    private func statusText(_ s: Int32) -> String {
-        switch s {
-        case 0: return String(localized: "purchase.status.pending")
-        case 1: return String(localized: "purchase.status.activating")
-        case 2: return String(localized: "purchase.status.cancelled")
-        case 3: return String(localized: "purchase.status.completed")
-        case 4: return String(localized: "purchase.status.discounted")
-        default: return "?"
-        }
-    }
-
-    /// `dataJson` may be a raw URL string, or `{ "url": "...", ... }` /
-    /// `{ "qr_code": "..." }` — pick whichever shape contains an http(s) URL.
-    private func extractURL(_ json: String) -> String? {
-        if json.hasPrefix("\"") {
-            // raw-string-encoded URL
-            return json.dropFirst().dropLast().description
-        }
-        guard let data = json.data(using: .utf8),
-              let parsed = try? JSONSerialization.jsonObject(with: data) else {
-            return nil
-        }
-        if let s = parsed as? String { return s }
-        if let dict = parsed as? [String: Any] {
-            for key in ["url", "redirect", "qr_code"] {
-                if let v = dict[key] as? String { return v }
-            }
-        }
-        return nil
-    }
-}
-
-private struct PaymentMethodRow: View {
-    let method: PaymentMethod
-    let isSelected: Bool
-    let onTap: () -> Void
-
-    var body: some View {
-        HStack {
-            Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
-                .foregroundStyle(.tint)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(method.name)
-                if let fee = feeLabel {
-                    Text(fee).font(.caption).foregroundStyle(.secondary)
-                }
-            }
-            Spacer()
-        }
-        .contentShape(Rectangle())
-        .onTapGesture { onTap() }
-    }
-
-    private var feeLabel: String? {
-        var pieces: [String] = []
-        if let f = method.handlingFeeFixed, f > 0 {
-            pieces.append(String(format: NSLocalizedString("purchase.payment.fee_fixed", comment: ""), formatPriceCents(f)))
-        }
-        if let p = method.handlingFeePercent, p > 0 {
-            pieces.append(String(format: NSLocalizedString("purchase.payment.fee_percent", comment: ""), p))
-        }
-        return pieces.isEmpty ? nil : pieces.joined(separator: "  ")
     }
 }

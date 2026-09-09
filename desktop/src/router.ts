@@ -1,6 +1,17 @@
 import { createRouter, createWebHashHistory } from "vue-router";
 import { api } from "@/api";
 import { useAuthStore } from "@/stores/auth";
+import { useFeaturesStore, type Feature } from "@/stores/features";
+
+const routeFeatures: Record<string, Feature> = {
+  plans: 'purchase', rules: 'custom_rules', notices: 'notice',
+  tickets: 'tickets', 'ticket-detail': 'tickets',
+};
+// Existing orders remain available when new purchases are disabled.
+export function isRouteEnabled(name: unknown): boolean {
+  const feature = typeof name === 'string' ? routeFeatures[name] : undefined;
+  return !feature || useFeaturesStore().enabled(feature);
+}
 
 export const router = createRouter({
   history: createWebHashHistory(),
@@ -26,9 +37,12 @@ export const router = createRouter({
     {
       path: "/",
       name: "home",
-      component: () => import("@/pages/Home.vue"),
+      component: () => import("@/pages/Dashboard.vue"),
       meta: { requiresAuth: true },
     },
+    { path: "/nodes", name: "nodes", component: () => import("@/pages/Nodes.vue"), meta: { requiresAuth: true } },
+    { path: "/account", name: "account", component: () => import("@/pages/Account.vue"), meta: { requiresAuth: true } },
+    { path: "/support", name: "support", component: () => import("@/pages/Support.vue"), meta: { requiresAuth: true } },
     {
       path: "/connections",
       name: "connections",
@@ -44,13 +58,13 @@ export const router = createRouter({
     {
       path: "/rules",
       name: "rules",
-      component: () => import("@/pages/Rules.vue"),
+      component: () => import("@/pages/Routing.vue"),
       meta: { requiresAuth: true },
     },
     {
       path: "/settings",
       name: "settings",
-      component: () => import("@/pages/Settings.vue"),
+      component: () => import("@/pages/Preferences.vue"),
       meta: { requiresAuth: true },
     },
     {
@@ -102,6 +116,12 @@ router.beforeEach(async (to) => {
 
   if (to.meta.requiresAuth && !auth.session) {
     return { name: "login", query: { redirect: to.fullPath } };
+  }
+
+  if (to.meta.requiresAuth) {
+    await useFeaturesStore().ensure();
+    if (!auth.session) return { name: 'login', query: { redirect: to.fullPath } };
+    if (!isRouteEnabled(to.name)) return { name: 'home' };
   }
 
   // For unauthenticated landing pages, redirect already-signed-in users home.

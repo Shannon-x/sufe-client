@@ -25,8 +25,8 @@ xcodegen generate
 
 # ---------------- Libbox.xcframework ----------------
 if [ ! -d "Vendor/Libbox.xcframework" ]; then
-    echo "→ install-libbox-ios.sh"
-    bash "${REPO_ROOT}/ci/scripts/install-libbox-ios.sh"
+    echo "→ build pinned Libbox compatibility engine"
+    bash "${REPO_ROOT}/ios/build-libbox.sh"
 else
     echo "→ Libbox.xcframework already present, skipping"
 fi

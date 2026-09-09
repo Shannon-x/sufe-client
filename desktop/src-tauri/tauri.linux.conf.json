@@ -1,0 +1,9 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "linux": {
+      "deb": { "depends": ["libcap2-bin", "iproute2"] },
+      "rpm": { "depends": ["libcap", "iproute"] }
+    }
+  }
+}

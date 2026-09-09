@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@/platform";
 import type {
   CheckoutResponse,
   ConnectionItem,
@@ -150,8 +150,8 @@ export const api = {
   // Validates a coupon against a plan. Throws on invalid/expired/wrong-plan
   // codes — the UI should catch and surface the message inline rather than
   // toasting. `value` semantics depend on `type`: 1 = cents off, 2 = percent.
-  checkCoupon: (code: string, planId: number) =>
-    invoke<CouponCheckResult>("check_coupon", { code, planId }),
+  checkCoupon: (code: string, planId: number, period?: string) =>
+    invoke<CouponCheckResult>("check_coupon", { code, planId, period }),
   cancelOrder: (tradeNo: string) => invoke<void>("cancel_order", { tradeNo }),
 
   // Tickets — read for free, reply / close are gated on `status === 0`.

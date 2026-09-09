@@ -32,6 +32,8 @@ import com.xboard.client.ui.components.LabeledTextField
 import com.xboard.client.ui.components.PrimaryButton
 import com.xboard.client.ui.components.ScreenScaffold
 import com.xboard.client.ui.components.ScrollableColumn
+import com.xboard.client.ui.components.CaptchaWidget
+import com.xboard.client.ui.components.rememberCaptcha
 import com.xboard.client.vm.AppViewModel
 import com.xboard.client.vm.AuthState
 import kotlinx.coroutines.delay
@@ -41,6 +43,8 @@ fun RegisterScreen(viewModel: AppViewModel, onBack: () -> Unit) {
     val authState by viewModel.authState.collectAsState()
     val home by viewModel.home.collectAsState()
     val site = home.siteConfig
+    val captcha = rememberCaptcha(site)
+    val emailSending by viewModel.emailCodeSending.collectAsState()
     val ctx = LocalContext.current
 
     var email by rememberSaveable { mutableStateOf("") }
@@ -88,7 +92,7 @@ fun RegisterScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                 value = email,
                 onValueChange = { email = it; localError = null },
                 keyboardType = KeyboardType.Email,
-                enabled = !submitting,
+                enabled = !submitting && !captcha.busy && !emailSending,
             )
 
             if (emailVerifyEnabled) {
@@ -102,7 +106,7 @@ fun RegisterScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                         value = code,
                         onValueChange = { code = it; localError = null },
                         keyboardType = KeyboardType.Number,
-                        enabled = !submitting,
+                        enabled = !submitting && !captcha.busy && !emailSending,
                         modifier = Modifier.weight(1f),
                     )
                     OutlinedButton(
@@ -111,9 +115,9 @@ fun RegisterScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                                 localError = ctx.getString(R.string.register_invalid_email)
                                 return@OutlinedButton
                             }
-                            viewModel.sendEmailCode(email) { resendCooldown = 60 }
+                            captcha.request("send_email") { token -> viewModel.sendEmailCode(email, token) { resendCooldown = 60 } }
                         },
-                        enabled = !submitting && resendCooldown == 0,
+                        enabled = !submitting && !captcha.busy && !emailSending && resendCooldown == 0,
                     ) {
                         Text(
                             text = if (resendCooldown > 0)
@@ -129,22 +133,22 @@ fun RegisterScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                 value = password,
                 onValueChange = { password = it; localError = null },
                 isPassword = true,
-                enabled = !submitting,
+                enabled = !submitting && !captcha.busy && !emailSending,
             )
             LabeledTextField(
                 label = stringResource(R.string.register_password_confirm),
                 value = confirm,
                 onValueChange = { confirm = it; localError = null },
                 isPassword = true,
-                enabled = !submitting,
+                enabled = !submitting && !captcha.busy && !emailSending,
             )
 
-            if (inviteRequired || invite.isNotBlank()) {
+            run {
                 LabeledTextField(
                     label = stringResource(R.string.register_invite),
                     value = invite,
                     onValueChange = { invite = it; localError = null },
-                    enabled = !submitting,
+                    enabled = !submitting && !captcha.busy && !emailSending,
                     supportingText = if (inviteRequired)
                         stringResource(R.string.register_invite_required) else null,
                 )
@@ -160,6 +164,7 @@ fun RegisterScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                 }
             }
 
+            CaptchaWidget(site, captcha, viewModel::loadSiteConfig)
             if (localError != null) {
                 Text(
                     text = localError!!,
@@ -172,6 +177,7 @@ fun RegisterScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                 text = if (submitting) stringResource(R.string.register_submitting)
                     else stringResource(R.string.register_submit),
                 submitting = submitting,
+                enabled = !captcha.busy && !emailSending,
                 onClick = {
                     val err = validate(
                         ctx = ctx,
@@ -190,16 +196,16 @@ fun RegisterScreen(viewModel: AppViewModel, onBack: () -> Unit) {
                         localError = err
                         return@PrimaryButton
                     }
-                    viewModel.register(
+                    captcha.request("register") { token -> viewModel.register(
                         RegisterArgs(
                             email = email.trim(),
                             password = password,
                             emailCode = code,
                             inviteCode = invite.takeIf { it.isNotBlank() },
-                            recaptcha = null,
-                            turnstile = null,
+                            recaptcha = if (captcha.isTurnstile) null else token,
+                            turnstile = if (captcha.isTurnstile) token else null,
                         ),
-                    )
+                    ) }
                 },
             )
 

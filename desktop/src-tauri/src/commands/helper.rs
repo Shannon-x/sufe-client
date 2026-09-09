@@ -35,6 +35,15 @@ pub struct HelperStatus {
 
 #[tauri::command]
 pub async fn helper_status(_state: State<'_, AppState>) -> CommandResult<HelperStatus> {
+    if !xboard_core::kernel::launcher::PRIVILEGED_LAUNCH_ENABLED {
+        return Ok(HelperStatus {
+            supported: false,
+            installed: false,
+            reachable: false,
+            helper_path: None,
+            plist_path: None,
+        });
+    }
     #[cfg(target_os = "macos")]
     {
         use std::path::Path;
@@ -98,6 +107,12 @@ pub async fn helper_status(_state: State<'_, AppState>) -> CommandResult<HelperS
 
 #[tauri::command]
 pub async fn helper_install(app: AppHandle) -> CommandResult<()> {
+    if !xboard_core::kernel::launcher::PRIVILEGED_LAUNCH_ENABLED {
+        return Err(CommandError::new(
+            "helper_unsupported",
+            "当前版本暂不启用桌面提权服务，请使用系统代理模式",
+        ));
+    }
     #[cfg(target_os = "macos")]
     {
         let installer = crate::helper_install::build_installer(&app);

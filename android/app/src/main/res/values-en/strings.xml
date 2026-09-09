@@ -5,7 +5,7 @@
 -->
 <resources>
 
-    <string name="app_name">Xboard</string>
+    <string name="app_name">Sufe</string>
     <string name="app_tagline">High-performance multi-platform proxy client based on mihomo</string>
 
     <!-- Login -->

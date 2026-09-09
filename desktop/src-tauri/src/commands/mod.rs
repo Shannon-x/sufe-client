@@ -7,6 +7,7 @@
 pub mod auth;
 pub mod billing;
 pub mod connection;
+pub mod custom_rules;
 pub mod guest;
 pub mod helper;
 pub mod kernel;
@@ -14,5 +15,6 @@ pub mod meta;
 pub mod nodes;
 pub mod notice;
 pub mod session;
+pub mod support;
 pub mod ticket;
 pub mod user;

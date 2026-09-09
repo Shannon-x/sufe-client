@@ -13,9 +13,7 @@ struct ConnectView: View {
                 }
                 StatusCaption(state: model.connectionState)
 
-                ModeSwitch(mode: model.requestedMode) { newMode in
-                    model.setMode(newMode)
-                }
+                Text("VPN 隧道 · 覆盖设备网络").foregroundStyle(.secondary)
 
                 CurrentNodeRow(name: model.selectedNode, route: model.selectedRoute) {
                     nodesOpen = true

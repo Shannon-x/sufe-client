@@ -59,7 +59,7 @@ pub struct SiteConfig {
     /// `"turnstile"`. Some forks use `"hcaptcha"` too — UI should treat any
     /// unknown value as "captcha required, but provider unsupported" and
     /// surface a clear error rather than silently bypass.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_string_or_null")]
     pub captcha_type: String,
 
     #[serde(default, deserialize_with = "de_string_or_null")]

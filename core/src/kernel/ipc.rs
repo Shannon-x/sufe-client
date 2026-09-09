@@ -6,39 +6,34 @@
 //! direction, framed by `\n`. `serde_json` never emits embedded newlines
 //! in compact mode, so `read_line` on the receiving side is unambiguous.
 //!
-//! Threat model & authentication boundaries (as actually implemented):
-//!
-//! * macOS (`xboard-helper`): the socket is `root:staff` mode `0660`, so only
-//!   the `staff` group can reach it. On top of that the helper reads the
-//!   connecting peer's uid via `SO_PEERCRED` and constrains every privileged
-//!   path operation to directories *that uid owns* under its own Application
-//!   Support tree (`validate_data_path` in the helper), and pins `exec_path`
-//!   to the bundled mihomo binary (`validate_exec_path`). So even a malicious
-//!   `staff` user cannot drive the helper into writing outside their own
-//!   data dir.
-//! * Windows (`xboard-svc`): every connection's client SID is resolved and
-//!   compared against the SID captured at install time — only the installing
-//!   user can issue commands — plus the same path / binary pinning.
-//!
-//! Deferred hardening: a per-install HMAC over each frame (keyed by the
-//! root-owned [`HELPER_SECRET_PATH`]). With the secret necessarily readable
-//! by the same `staff` group that can already reach the socket, an HMAC adds
-//! little over the peercred + ownership checks above; a *per-user* secret
-//! (chowned to each peer uid on first contact) would be the way to make it a
-//! real second factor. Tracked as a follow-up — it is NOT currently enforced,
-//! so don't treat it as a boundary.
+//! Only the installation owner may use the root/SYSTEM helper. V2 carries
+//! bounded inline YAML: the service builds an allowlisted snapshot in private
+//! storage and starts its fixed, protected mihomo. A restricted HTTP gateway
+//! keeps the privileged controller credential outside the UI process.
 
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// Default Unix-socket path used by `xboard-helper` on macOS. Lives under
-/// `/tmp` so launchd recreates it cleanly across reboots; the helper
-/// chowns it `root:staff` and chmods it `0660`.
-pub const HELPER_SOCKET_PATH: &str = "/tmp/xboard-helper.sock";
+/// Parent is root-owned 0755; socket is root:staff 0660 with peer-UID checks.
+pub const HELPER_SOCKET_PATH: &str =
+    "/Library/Application Support/com.xboard.client/ipc/helper.sock";
 
 /// Default Windows named-pipe path. Phase 2.
 pub const SVC_PIPE_PATH: &str = r"\\.\pipe\xboard-client-svc";
+
+/// A changed app or bundled kernel must upgrade the installed privileged copy.
+pub fn service_version() -> String {
+    format!(
+        "{}:{}+ipc2",
+        env!("CARGO_PKG_VERSION"),
+        include_str!("../../../ci/mihomo-version.txt").trim()
+    )
+}
+
+pub fn compatible_service_version(version: &str) -> bool {
+    version == service_version()
+}
 
 /// Where the helper installs its per-install pre-shared secret. Owned by
 /// root, mode 0640, group `staff` so the UI process can read it.
@@ -63,7 +58,7 @@ pub enum FrameBody {
 }
 
 /// What the UI asks the privileged side to do.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
     /// Liveness probe. No side effects.
@@ -81,8 +76,24 @@ pub enum Request {
         cfg_path: PathBuf,
         log_path: PathBuf,
     },
+    /// Inline, bounded configuration only. The privileged service sanitizes
+    /// this snapshot and selects its own executable, working and log paths.
+    /// Legacy StartKernel requests must be rejected by all privileged services.
+    StartKernelV2 { config_yaml: String },
     /// Kill the running kernel and wait for it to exit.
     StopKernel,
+}
+
+impl std::fmt::Debug for Request {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ping => f.write_str("Ping"),
+            Self::Status => f.write_str("Status"),
+            Self::StopKernel => f.write_str("StopKernel"),
+            Self::StartKernel { .. } => f.write_str("StartKernel(legacy, rejected)"),
+            Self::StartKernelV2 { .. } => f.write_str("StartKernelV2([REDACTED])"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -136,6 +147,23 @@ mod tests {
         let back: Frame = serde_json::from_str(&s).unwrap();
         assert_eq!(back.id, 7);
         assert!(matches!(back.into_request(), Some(Request::Ping)));
+    }
+
+    #[test]
+    fn inline_snapshot_round_trips_without_debug_disclosure() {
+        let frame = Frame::request(
+            4,
+            Request::StartKernelV2 {
+                config_yaml: "secret: never-log-me\n".into(),
+            },
+        );
+        assert!(!format!("{frame:?}").contains("never-log-me"));
+        let wire = serde_json::to_string(&frame).unwrap();
+        assert!(wire.contains("start_kernel_v2"));
+        let decoded: Frame = serde_json::from_str(&wire).unwrap();
+        assert!(
+            matches!(decoded.into_request(), Some(Request::StartKernelV2 { config_yaml }) if config_yaml == "secret: never-log-me\n")
+        );
     }
 
     #[test]

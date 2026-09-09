@@ -14,10 +14,10 @@ bootstrap:
     rustup show active-toolchain || rustup default stable
     rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android
     @echo "→ cargo-ndk for Android cross-compile"
-    cargo install cargo-ndk uniffi-bindgen-cli || true
+    cargo install cargo-ndk --locked
     @echo "→ Tauri prerequisites"
-    cargo install tauri-cli --version "^2.0" || true
-    @echo "Done. Now install bun (https://bun.sh) for the desktop frontend."
+    cargo install tauri-cli --version "^2.0" --locked
+    @echo "Done. Install Node.js 24 LTS, then run just desktop-install."
 
 # ---------------- core (Rust) ----------------
 core-build:
@@ -35,14 +35,14 @@ core-fmt:
 
 # Android cross-compile (run from monorepo root)
 core-android:
-    cd core && cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 -o ../android/app/src/main/jniLibs build --release
+    cd core && cargo ndk -t arm64-v8a -t armeabi-v7a -t x86_64 --platform 24 -o ../android/app/src/main/jniLibs build --release --lib -p xboard-core
 
 # ---------------- desktop (Tauri) ----------------
 # `npm` is the baseline; swap in bun/pnpm if available.
 # `--cache=$PWD/.npm-cache` sidesteps a recurring permission issue on
 # globally shared ~/.npm caches.
 desktop-install:
-    cd desktop && npm install --no-audit --fund=false --cache=$PWD/.npm-cache
+    cd desktop && npm ci --no-audit --fund=false --cache=$PWD/.npm-cache
 
 desktop-check:
     cargo check -p xboard-desktop
@@ -82,7 +82,7 @@ kernel-fetch version *args:
 # Pull mihomo Android binaries (3 ABIs disguised as libmihomo.so) into
 # android/app/src/main/jniLibs/ so Gradle packages them with the APK.
 # Run before `just android-debug` / `android-release`. Pass an ABI as
-# the second arg to limit the fetch (e.g. `just kernel-android v1.19.10 arm64-v8a`).
+# the second arg to limit the fetch (e.g. `just kernel-android v1.19.30 arm64-v8a`).
 kernel-android version *args:
     bash ci/scripts/install-mihomo-android.sh {{version}} {{args}}
 
@@ -93,7 +93,7 @@ helper-build profile="debug":
     bash ci/scripts/install-helper-sidecar.sh {{profile}}
 
 # ---------------- ios ----------------
-# One-time / on-demand bootstrap: pulls Libbox.xcframework, cross-compiles
+# One-time / on-demand bootstrap: builds pinned Libbox.xcframework, cross-compiles
 # xboard-core for ios + ios-sim, builds XboardCore.xcframework, generates
 # UniFFI Swift bindings, and runs xcodegen to materialize the .xcodeproj.
 # Run after a fresh clone (or whenever ffi.udl changes).
@@ -112,9 +112,9 @@ core-ios:
 ios-bindings:
     bash ci/scripts/build-uniffi-swift.sh
 
-# Pull (or refresh) the Libbox.xcframework binary into ios/Vendor/.
-# Optional version arg pins to a specific sing-box-for-apple release.
-ios-libbox version="latest":
+# Build the fixed Libbox development compatibility baseline into ios/Vendor/.
+# This is not a latest-version selector; see ios/README.md.
+ios-libbox version="1.10.7":
     bash ci/scripts/install-libbox-ios.sh {{version}}
 
 # Compile the iOS app for the simulator (smoke check). Requires

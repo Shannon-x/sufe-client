@@ -1,8 +1,14 @@
 # --- Rust ---
 target/
+.tools/
+artifacts/
+desktop/playwright-report/
+desktop/test-results/
 Cargo.lock.bak
 **/*.rs.bk
 *.pdb
+__pycache__/
+*.pyc
 
 # --- Node / Bun ---
 node_modules/

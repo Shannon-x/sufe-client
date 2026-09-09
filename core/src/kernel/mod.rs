@@ -4,7 +4,10 @@
 //! xray, ...) are drop-in implementations that satisfy the trait.
 
 pub mod driver;
+pub mod control_proxy;
 pub mod ipc;
+#[cfg(windows)]
+pub mod windows_pipe;
 pub mod launcher;
 pub mod manager;
 pub mod mihomo;

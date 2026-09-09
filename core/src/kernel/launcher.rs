@@ -34,6 +34,63 @@ use parking_lot::Mutex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::process::{Child, Command};
+
+/// V2 services accept constrained inline snapshots and expose a restricted
+/// gateway. Privileged executables, data and configuration are service-owned.
+pub const PRIVILEGED_LAUNCH_ENABLED: bool = true;
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn enforce_privileged_launch_policy() -> Result<(), LauncherError> {
+    if !PRIVILEGED_LAUNCH_ENABLED {
+        return Err(LauncherError::NotPermitted(
+            "此版本未开放特权 TUN 服务，请使用系统代理模式".into(),
+        ));
+    }
+    Ok(())
+}
+/// Read through one file handle with a strict bound before crossing privilege.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+async fn read_privileged_snapshot(path: &std::path::Path) -> Result<String, LauncherError> {
+    use tokio::io::AsyncReadExt;
+    let file = tokio::fs::File::open(path).await?;
+    let limit = crate::profile::privileged::MAX_CONFIG_BYTES;
+    let mut bytes = Vec::new();
+    file.take((limit + 1) as u64)
+        .read_to_end(&mut bytes)
+        .await?;
+    if bytes.len() > limit {
+        return Err(LauncherError::Other("TUN 配置超过 2 MiB 限制".into()));
+    }
+    String::from_utf8(bytes).map_err(|_| LauncherError::Other("TUN 配置不是有效 UTF-8".into()))
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+async fn wait_for_ipc_service<F, Fut>(mut ping: F) -> Result<(), LauncherError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<super::ipc::Response, LauncherError>>,
+{
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        match ping().await {
+            Ok(super::ipc::Response::Pong { helper_version })
+                if super::ipc::compatible_service_version(&helper_version) =>
+            {
+                return Ok(())
+            }
+            Err(LauncherError::ServiceMissing(_)) if tokio::time::Instant::now() < deadline => {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+            Ok(_) => {
+                return Err(LauncherError::Ipc(
+                    "辅助服务版本不兼容，请重新安装客户端".into(),
+                ))
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 use tokio::sync::broadcast;
 
 /// Capacity for the launcher's failure broadcast channel. A handful of
@@ -142,6 +199,9 @@ pub struct KernelSpawnSpec {
     /// Bearer secret matching `secret:` in the YAML. Required to hit
     /// `/version` once the kernel is up.
     pub controller_secret: String,
+    /// Borrowed host-owned TUN fd. The direct Unix child inherits this fd;
+    /// its parent retains ownership until `TunDelegate.close_tun`.
+    pub tun_fd: Option<i32>,
 }
 
 /// Opaque handle returned by [`KernelLauncher::spawn`]. The manager stores
@@ -340,6 +400,26 @@ impl KernelLauncher for DirectLauncher {
             .stderr(Stdio::from(log_clone))
             .kill_on_drop(true);
 
+        #[cfg(unix)]
+        if let Some(fd) = spec.tun_fd {
+            if fd < 3 {
+                return Err(LauncherError::Other("invalid host TUN descriptor".into()));
+            }
+            // Android's ParcelFileDescriptor has FD_CLOEXEC set. Clear it
+            // only in the forked child, never in the multithreaded parent
+            // where unrelated subprocesses could otherwise inherit the VPN.
+            // SAFETY: the closure performs only async-signal-safe fcntl calls.
+            unsafe {
+                cmd.pre_exec(move || {
+                    let flags = libc::fcntl(fd, libc::F_GETFD);
+                    if flags < 0 || libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) < 0 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+
         let child = cmd.spawn()?;
         let pid = child.id().unwrap_or(0);
         *self.child.lock() = Some(child);
@@ -482,6 +562,8 @@ async fn tail_log_file(path: &std::path::Path) -> Option<String> {
 /// YAML always sets one (manager generates a fresh hex secret per session).
 async fn wait_for_controller(addr: &str, secret: &str) -> Result<(), LauncherError> {
     let client = Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
         .timeout(Duration::from_millis(500))
         .build()
         .map_err(|e| LauncherError::Other(format!("reqwest client: {e}")))?;
@@ -569,10 +651,9 @@ impl SvcPipeLauncher {
     /// one client and being ready for the next.
     async fn call(&self, req: super::ipc::Request) -> Result<super::ipc::Response, LauncherError> {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        use tokio::net::windows::named_pipe::ClientOptions;
-
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         let mut client = loop {
-            match ClientOptions::new().open(&self.pipe_path) {
+            match super::windows_pipe::open_service_pipe(&self.pipe_path) {
                 Ok(c) => break c,
                 Err(e) => {
                     let raw = e.raw_os_error();
@@ -580,6 +661,9 @@ impl SvcPipeLauncher {
                     // recommend WaitNamedPipe but a short async sleep + retry
                     // is just as good for our scale.
                     if raw == Some(231) {
+                        if tokio::time::Instant::now() >= deadline {
+                            return Err(LauncherError::Ipc("service pipe remained busy".into()));
+                        }
                         tokio::time::sleep(Duration::from_millis(50)).await;
                         continue;
                     }
@@ -622,7 +706,7 @@ impl SvcPipeLauncher {
         let (read, _write) = tokio::io::split(client);
         let mut reader = BufReader::new(read);
         let mut buf = String::new();
-        let read_n = tokio::time::timeout(Duration::from_secs(15), reader.read_line(&mut buf))
+        let read_n = tokio::time::timeout(Duration::from_secs(60), reader.read_line(&mut buf))
             .await
             .map_err(|_| LauncherError::Ipc("response timeout".into()))?
             .map_err(|e| LauncherError::Ipc(format!("read: {e}")))?;
@@ -649,21 +733,27 @@ impl SvcPipeLauncher {
 #[async_trait]
 impl KernelLauncher for SvcPipeLauncher {
     async fn ensure_privileged(&self) -> Result<(), LauncherError> {
+        enforce_privileged_launch_policy()?;
         match self.call(super::ipc::Request::Ping).await {
-            Ok(super::ipc::Response::Pong { .. }) => Ok(()),
+            Ok(super::ipc::Response::Pong { helper_version })
+                if super::ipc::compatible_service_version(&helper_version) =>
+            {
+                Ok(())
+            }
+            Ok(super::ipc::Response::Pong { .. }) => {
+                let installer = self.installer.as_ref().ok_or_else(|| {
+                    LauncherError::ServiceMissing("请更新辅助服务以启用 TUN".into())
+                })?;
+                installer.install().await?;
+                wait_for_ipc_service(|| self.call(super::ipc::Request::Ping)).await
+            }
             Ok(other) => Err(LauncherError::Ipc(format!(
                 "unexpected ping response: {other:?}"
             ))),
             Err(LauncherError::ServiceMissing(_)) => {
                 if let Some(installer) = &self.installer {
                     installer.install().await?;
-                    match self.call(super::ipc::Request::Ping).await {
-                        Ok(super::ipc::Response::Pong { .. }) => Ok(()),
-                        Ok(other) => Err(LauncherError::Ipc(format!(
-                            "unexpected ping after install: {other:?}"
-                        ))),
-                        Err(e) => Err(e),
-                    }
+                    wait_for_ipc_service(|| self.call(super::ipc::Request::Ping)).await
                 } else {
                     Err(LauncherError::ServiceMissing(
                         "xboard-svc not installed".into(),
@@ -675,12 +765,10 @@ impl KernelLauncher for SvcPipeLauncher {
     }
 
     async fn spawn(&self, spec: KernelSpawnSpec) -> Result<LaunchHandle, LauncherError> {
+        enforce_privileged_launch_policy()?;
         let resp = self
-            .call(super::ipc::Request::StartKernel {
-                exec_path: spec.exec_path.clone(),
-                work_dir: spec.work_dir.clone(),
-                cfg_path: spec.cfg_path.clone(),
-                log_path: spec.log_path.clone(),
+            .call(super::ipc::Request::StartKernelV2 {
+                config_yaml: read_privileged_snapshot(&spec.cfg_path).await?,
             })
             .await?;
         match resp {
@@ -809,6 +897,11 @@ impl HelperSocketLauncher {
                 )),
                 _ => LauncherError::Io(e),
             })?;
+        if stream.peer_cred().map_err(LauncherError::Io)?.uid() != 0 {
+            return Err(LauncherError::NotPermitted(
+                "辅助服务身份验证失败，请重新安装".into(),
+            ));
+        }
         let (read_half, mut write_half) = stream.into_split();
         let id = self.next_request_id();
         let frame = super::ipc::Frame::request(id, req);
@@ -826,7 +919,7 @@ impl HelperSocketLauncher {
 
         let mut reader = BufReader::new(read_half);
         let mut buf = String::new();
-        let read = tokio::time::timeout(Duration::from_secs(15), reader.read_line(&mut buf))
+        let read = tokio::time::timeout(Duration::from_secs(60), reader.read_line(&mut buf))
             .await
             .map_err(|_| LauncherError::Ipc("response timeout".into()))?
             .map_err(|e| LauncherError::Ipc(format!("read: {e}")))?;
@@ -851,8 +944,20 @@ impl HelperSocketLauncher {
 #[async_trait]
 impl KernelLauncher for HelperSocketLauncher {
     async fn ensure_privileged(&self) -> Result<(), LauncherError> {
+        enforce_privileged_launch_policy()?;
         match self.call(super::ipc::Request::Ping).await {
-            Ok(super::ipc::Response::Pong { .. }) => Ok(()),
+            Ok(super::ipc::Response::Pong { helper_version })
+                if super::ipc::compatible_service_version(&helper_version) =>
+            {
+                Ok(())
+            }
+            Ok(super::ipc::Response::Pong { .. }) => {
+                let installer = self.installer.as_ref().ok_or_else(|| {
+                    LauncherError::ServiceMissing("请更新辅助服务以启用 TUN".into())
+                })?;
+                installer.install().await?;
+                wait_for_ipc_service(|| self.call(super::ipc::Request::Ping)).await
+            }
             Ok(other) => Err(LauncherError::Ipc(format!(
                 "unexpected ping response: {other:?}"
             ))),
@@ -862,13 +967,7 @@ impl KernelLauncher for HelperSocketLauncher {
                 // manager downgrades to SystemProxy.
                 if let Some(installer) = &self.installer {
                     installer.install().await?;
-                    match self.call(super::ipc::Request::Ping).await {
-                        Ok(super::ipc::Response::Pong { .. }) => Ok(()),
-                        Ok(other) => Err(LauncherError::Ipc(format!(
-                            "unexpected ping after install: {other:?}"
-                        ))),
-                        Err(e) => Err(e),
-                    }
+                    wait_for_ipc_service(|| self.call(super::ipc::Request::Ping)).await
                 } else {
                     Err(LauncherError::ServiceMissing(
                         "xboard-helper not installed".into(),
@@ -880,12 +979,10 @@ impl KernelLauncher for HelperSocketLauncher {
     }
 
     async fn spawn(&self, spec: KernelSpawnSpec) -> Result<LaunchHandle, LauncherError> {
+        enforce_privileged_launch_policy()?;
         let resp = self
-            .call(super::ipc::Request::StartKernel {
-                exec_path: spec.exec_path.clone(),
-                work_dir: spec.work_dir.clone(),
-                cfg_path: spec.cfg_path.clone(),
-                log_path: spec.log_path.clone(),
+            .call(super::ipc::Request::StartKernelV2 {
+                config_yaml: read_privileged_snapshot(&spec.cfg_path).await?,
             })
             .await?;
         match resp {
@@ -936,13 +1033,8 @@ pub mod linux_caps {
     use std::ffi::CString;
     use std::path::Path;
 
-    /// Returns true iff `path` has any value stored under the
-    /// `security.capability` extended attribute. We deliberately don't
-    /// decode the blob (which would require parsing `struct vfs_cap_data`
-    /// and matching against the right cap_net_admin bit) — the presence
-    /// of the xattr is a strong-enough signal that someone has already
-    /// run `setcap` on this binary, which is the only state we currently
-    /// produce via the deb/rpm postinst.
+    /// Require effective CAP_NET_ADMIN in the file's permitted set. Merely
+    /// having an xattr (e.g. only CAP_NET_BIND_SERVICE) does not enable TUN.
     ///
     /// Failure modes that map to `false`:
     ///   * file doesn't exist (ENOENT)
@@ -956,12 +1048,39 @@ pub mod linux_caps {
         let Ok(attr) = CString::new("security.capability") else {
             return false;
         };
-        // SAFETY: getxattr is a stable Linux syscall; passing a null buffer
-        // with size 0 is the documented way to query whether the xattr
-        // exists. Returns the size of the value (>=0) on success or -1 on
-        // any error.
-        let rc = unsafe { libc_getxattr(cpath.as_ptr(), attr.as_ptr(), std::ptr::null_mut(), 0) };
-        rc >= 0
+        let mut bytes = [0u8; 24];
+        // SAFETY: buffer is writable for the supplied size. Linux capability
+        // xattrs have fixed v1/v2/v3 sizes of 12/20/24 bytes respectively.
+        let rc = unsafe {
+            libc_getxattr(
+                cpath.as_ptr(),
+                attr.as_ptr(),
+                bytes.as_mut_ptr().cast(),
+                bytes.len(),
+            )
+        };
+        rc > 0 && (rc as usize) <= bytes.len() && grants_net_admin(&bytes[..rc as usize])
+    }
+
+    fn grants_net_admin(bytes: &[u8]) -> bool {
+        if bytes.len() < 12 {
+            return false;
+        }
+        let magic = u32::from_le_bytes(bytes[0..4].try_into().unwrap());
+        let expected_size = match magic & 0xff00_0000 {
+            0x0100_0000 => 12,
+            0x0200_0000 => 20,
+            0x0300_0000 => 24,
+            _ => return false,
+        };
+        if bytes.len() != expected_size || magic & 1 == 0 {
+            return false;
+        }
+        // A namespaced capability for another root uid does not grant host TUN.
+        if expected_size == 24 && u32::from_le_bytes(bytes[20..24].try_into().unwrap()) != 0 {
+            return false;
+        }
+        u32::from_le_bytes(bytes[4..8].try_into().unwrap()) & (1 << 12) != 0
     }
 
     extern "C" {
@@ -982,6 +1101,28 @@ pub mod linux_caps {
         fn missing_file_has_no_capability() {
             // ENOENT path — the probe must report false rather than panic.
             assert!(!has_file_capability(Path::new("/nonexistent/xboard-test")));
+        }
+
+        #[test]
+        fn capability_blob_requires_effective_net_admin() {
+            for (revision, length) in [(1u32, 12), (2, 20), (3, 24)] {
+                let mut data = vec![0u8; length];
+                data[..4].copy_from_slice(&((revision << 24) | 1).to_le_bytes());
+                data[4..8].copy_from_slice(&(1u32 << 12).to_le_bytes());
+                assert!(grants_net_admin(&data));
+                data[4..8].copy_from_slice(&(1u32 << 10).to_le_bytes());
+                assert!(!grants_net_admin(&data));
+                data[4..8].copy_from_slice(&(1u32 << 12).to_le_bytes());
+                data[0] = 0;
+                assert!(!grants_net_admin(&data));
+            }
+            assert!(!grants_net_admin(&[]));
+            assert!(!grants_net_admin(&[0; 24]));
+            let mut namespaced = vec![0u8; 24];
+            namespaced[..4].copy_from_slice(&0x0300_0001u32.to_le_bytes());
+            namespaced[4..8].copy_from_slice(&(1u32 << 12).to_le_bytes());
+            namespaced[20..24].copy_from_slice(&1000u32.to_le_bytes());
+            assert!(!grants_net_admin(&namespaced));
         }
     }
 }
@@ -1019,13 +1160,21 @@ mod tests {
         // `true` exits immediately with status 0 — the watcher's
         // `child.wait()` arm fires before `stop_signal.notified()` ever
         // wakes, so we expect a `KernelFailure::Exited` broadcast.
-        let child = TokioCommand::new("true")
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = TokioCommand::new("cmd.exe");
+            command.args(["/D", "/C", "exit", "0"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = TokioCommand::new("true");
+        let child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .expect("spawn /usr/bin/true");
+            .expect("spawn successful child");
         let signal = std::sync::Arc::new(tokio::sync::Notify::new());
         launcher.spawn_exit_watcher(child, PathBuf::from("/nonexistent.log"), signal);
         let evt = tokio::time::timeout(Duration::from_secs(2), rx.recv())
@@ -1045,14 +1194,30 @@ mod tests {
         // Long-lived child: `sleep 5` would last well past the test's
         // timeout. The watcher must `kill` it when the stop signal fires
         // and emit nothing on the broadcast channel.
-        let child = TokioCommand::new("sleep")
-            .arg("5")
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = TokioCommand::new("powershell.exe");
+            command.args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 5",
+            ]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = TokioCommand::new("sleep");
+            command.arg("5");
+            command
+        };
+        let child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .kill_on_drop(true)
             .spawn()
-            .expect("spawn sleep");
+            .expect("spawn sleeping child");
         let signal = std::sync::Arc::new(tokio::sync::Notify::new());
         // Set expecting_stop, fire the notify, then verify silence.
         flag.store(true, Ordering::SeqCst);

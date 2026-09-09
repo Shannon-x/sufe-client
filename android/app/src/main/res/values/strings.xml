@@ -13,7 +13,7 @@
 <resources>
 
     <!-- App-wide -->
-    <string name="app_name">Xboard</string>
+    <string name="app_name">Sufe</string>
     <string name="app_tagline">基于 mihomo 的高性能多平台代理客户端</string>
 
     <!-- Login -->

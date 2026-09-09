@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Xboard",
+  "productName": "Sufe",
   "version": "0.1.0",
   "identifier": "com.xboard.client.desktop",
   "build": {
@@ -14,10 +14,10 @@
     "windows": [
       {
         "label": "main",
-        "title": "Xboard",
-        "width": 1100,
-        "height": 720,
-        "minWidth": 880,
+        "title": "Sufe · 让连接，自由一点",
+        "width": 1280,
+        "height": 850,
+        "minWidth": 390,
         "minHeight": 600,
         "resizable": true,
         "fullscreen": false,
@@ -45,10 +45,10 @@
       "icons/icon.ico"
     ],
     "category": "Utility",
-    "shortDescription": "Xboard 客户端",
-    "longDescription": "Xboard 多平台代理客户端：基于 mihomo (Clash.Meta) 内核，支持运行时热更新与多内核扩展。",
-    "publisher": "Xboard",
-    "copyright": "Copyright © 2026 Xboard contributors",
+    "shortDescription": "Sufe 专属机场客户端",
+    "longDescription": "Sufe 专属机场客户端：基于 mihomo 内核，支持订阅购买、智能分流、安全配置与在线客服。",
+    "publisher": "Sufe",
+    "copyright": "Copyright © 2026 Sufe contributors",
     "macOS": {
       "minimumSystemVersion": "11.0",
       "frameworks": []

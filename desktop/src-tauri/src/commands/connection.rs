@@ -5,6 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
+use std::sync::atomic::Ordering;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -32,6 +33,11 @@ pub struct NodeGeo {
 
 #[tauri::command]
 pub async fn connect(state: State<'_, AppState>, app: AppHandle) -> CommandResult<ConnectionState> {
+    let _operation = state
+        .connection_lock
+        .try_lock()
+        .map_err(|_| CommandError::new("connection_busy", "连接状态正在更新，请稍后重试"))?;
+    let generation = state.connection_generation.load(Ordering::SeqCst);
     let auth = state
         .snapshot_auth()
         .ok_or_else(|| CommandError::new("unauthorized", "未登录").with_status(401))?;
@@ -42,24 +48,41 @@ pub async fn connect(state: State<'_, AppState>, app: AppHandle) -> CommandResul
 
     // Pull the *current* subscribe URL — server might have rotated the token.
     let subscribe = client.user_subscribe().await?;
+    if state.connection_generation.load(Ordering::SeqCst) != generation
+        || state
+            .snapshot_auth()
+            .map_or(true, |session| session.email != auth.email)
+    {
+        return Err(CommandError::new("connection_cancelled", "连接已取消"));
+    }
     if subscribe.token != auth.subscribe_token {
         // Refresh our cached session token; the bearer is still valid.
-        // Guard against a concurrent logout having cleared `auth` while we
-        // awaited above — an `unwrap()` here would panic the command thread
-        // and abort the process (panic=abort), leaking TUN/system-proxy
-        // state. If the session is gone, just skip the cache update.
         if let Some(session) = state.auth.write().as_mut() {
-            session.subscribe_token = subscribe.token.clone();
+            if session.email == auth.email {
+                session.subscribe_token = subscribe.token.clone();
+            }
         }
     }
 
+    super::guest::refresh_client_config(&state).await?;
     let manager = state.ensure_kernel(&app)?;
+    manager.set_custom_rules_enabled(super::guest::client_config_snapshot().features.custom_rules);
     manager.connect(&subscribe.subscribe_url).await?;
+    if state.connection_generation.load(Ordering::SeqCst) != generation
+        || state
+            .snapshot_auth()
+            .map_or(true, |session| session.email != auth.email)
+    {
+        let _ = manager.disconnect().await;
+        return Err(CommandError::new("connection_cancelled", "连接已取消"));
+    }
     Ok(manager.state())
 }
 
 #[tauri::command]
 pub async fn disconnect(state: State<'_, AppState>) -> CommandResult<ConnectionState> {
+    state.connection_generation.fetch_add(1, Ordering::SeqCst);
+    let _operation = state.connection_lock.lock().await;
     let manager = state
         .kernel
         .get()
@@ -80,6 +103,13 @@ pub fn connection_state(state: State<'_, AppState>) -> CommandResult<ConnectionS
 
 #[tauri::command]
 pub fn set_tunnel_mode(state: State<'_, AppState>, mode: TunnelMode) -> CommandResult<()> {
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    if mode == TunnelMode::Tun && !xboard_core::kernel::launcher::PRIVILEGED_LAUNCH_ENABLED {
+        return Err(CommandError::new(
+            "tun_unavailable",
+            "当前版本在 Windows/macOS 上使用系统代理模式，TUN 提权服务尚未开放",
+        ));
+    }
     *state.requested_mode.write() = mode;
     if let Some(manager) = state.kernel.get() {
         manager.set_requested_mode(mode);
@@ -483,12 +513,30 @@ pub async fn rules(state: State<'_, AppState>) -> CommandResult<Vec<RuleItem>> {
 /// frontend's bounded auto-reconnect after a `connection://kernel-failure`.
 #[tauri::command]
 pub async fn reconnect(state: State<'_, AppState>) -> CommandResult<ConnectionState> {
+    let _operation = state
+        .connection_lock
+        .try_lock()
+        .map_err(|_| CommandError::new("connection_busy", "连接状态正在更新，请稍后重试"))?;
+    let generation = state.connection_generation.load(Ordering::SeqCst);
+    let auth = state
+        .snapshot_auth()
+        .ok_or_else(|| CommandError::new("unauthorized", "未登录").with_status(401))?;
     let manager = state
         .kernel
         .get()
         .cloned()
         .ok_or_else(|| CommandError::new("kernel_not_running", "内核未启动"))?;
+    super::guest::refresh_client_config(&state).await?;
+    manager.set_custom_rules_enabled(super::guest::client_config_snapshot().features.custom_rules);
     manager.reconnect().await?;
+    if state.connection_generation.load(Ordering::SeqCst) != generation
+        || state
+            .snapshot_auth()
+            .map_or(true, |session| session.email != auth.email)
+    {
+        let _ = manager.disconnect().await;
+        return Err(CommandError::new("connection_cancelled", "连接已取消"));
+    }
     Ok(manager.state())
 }
 

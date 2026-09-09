@@ -6,9 +6,11 @@
 
 import { defineStore } from "pinia";
 import { ref, computed, type Ref } from "vue";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen } from "@/platform";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { api } from "@/api";
 import { i18n } from "@/i18n";
+import { useAuthStore } from "@/stores/auth";
 import type {
   ConnectionState,
   ProxyGroup,
@@ -38,15 +40,11 @@ export const useConnectionStore = defineStore("connection", () => {
   // Rolling up/down samples for the live traffic chart.
   const trafficHistory = ref<Array<{ up: number; down: number }>>([]);
   const proxies = ref<ProxyGroup[]>([]);
-  const mode = ref<TunnelMode>("tun");
+  const mode = ref<TunnelMode>(localStorage.getItem('sufe.tunnelMode') === 'system_proxy' ? 'system_proxy' : 'tun');
   // True while the bounded auto-reconnect loop is running after a crash.
   const reconnecting = ref(false);
-  // What the user *asked for* — distinct from the mode KernelManager actually
-  // ended up using. When TUN elevation fails (no consent / no helper / no
-  // capability), the kernel silently downgrades to system_proxy and the
-  // connected state will report `mode: "system_proxy"` while requestedMode
-  // stays "tun". The UI uses the gap to surface a one-shot warning.
-  const requestedMode = ref<TunnelMode>("tun");
+  // Preserve the user's selected mode through failed authorization and reconnects.
+  const requestedMode = ref<TunnelMode>(mode.value);
   // Tail of the kernel's stdout/stderr captured by KernelManager at the
   // moment a `connection://kernel-failure` event fired. Surfaced via
   // StatusHero / a log modal so users can self-diagnose port conflicts,
@@ -66,6 +64,23 @@ export const useConnectionStore = defineStore("connection", () => {
   // Set when the user manually connects/disconnects so an in-flight
   // auto-reconnect doesn't fight a deliberate action.
   let reconnectCancelled = false;
+  let active = false;
+  let generation = 0;
+  let operation = 0;
+  let stateRevision = 0;
+  let proxyRequest = 0;
+  let trafficGeneration = 0;
+  let disconnecting = false;
+  let hydration: Promise<void> | null = null;
+  let cleanup: Promise<void> | null = null;
+  const mutations = new Set<Promise<unknown>>();
+  const auth = useAuthStore();
+  const live = (version: number) => active && version === generation && !!auth.session;
+  function track<T>(request: Promise<T>): Promise<T> {
+    mutations.add(request);
+    void request.finally(() => mutations.delete(request)).catch(() => undefined);
+    return request;
+  }
 
   const isConnected = computed(() => state.value.kind === "connected");
   const isBusy = computed(() => state.value.kind === "connecting");
@@ -76,8 +91,7 @@ export const useConnectionStore = defineStore("connection", () => {
     }
     return mode.value;
   });
-  // True only while connected via a different mode than the user picked —
-  // i.e. KernelManager auto-downgraded TUN→system_proxy at connect time.
+  // Detect a mode change from another UI surface while connected.
   const wasDowngraded = computed<boolean>(() => {
     const s = state.value;
     if (s.kind !== "connected") return false;
@@ -93,279 +107,258 @@ export const useConnectionStore = defineStore("connection", () => {
     return resolveProxyLeaf(currentProxy.value, proxies.value);
   });
 
-  /// Read the current state once + start listening. Idempotent — repeated
-  /// calls just refresh the snapshot.
-  async function hydrate() {
-    state.value = await api.connectionState();
+  function applyState(next: ConnectionState) {
+    if (disconnecting && (next.kind === 'connected' || next.kind === 'connecting')) return;
+    stateRevision++;
+    state.value = next;
+    if (next.kind === 'connected') {
+      lastErrorCause = null;
+      lastKernelLog.value = null;
+      reconnecting.value = false;
+      startTrafficPoll();
+      void refreshProxies().then(() => restoreSelections());
+    } else {
+      stopTrafficPoll();
+      proxyRequest++;
+      proxies.value = [];
+    }
+  }
+
+  function hydrate(): Promise<void> {
+    if (hydration) return hydration;
+    const task = initialize();
+    hydration = task;
+    void task.finally(() => { if (hydration === task) hydration = null; }).catch(() => undefined);
+    return task;
+  }
+
+  async function initialize() {
+    const version = generation;
+    if (cleanup) await cleanup;
+    if (!auth.session || version !== generation) return;
+    active = true;
+    // A disposed initialization must unregister even listeners whose async
+    // registration finished after logout.
     if (!unlisten) {
-      unlisten = await listen<ConnectionState>(
-        "xboard://connection-state",
-        (e) => {
-          state.value = e.payload;
-          // Drive the traffic poller from state transitions: only poll while
-          // connected, stop the moment we leave that state.
-          if (e.payload.kind === "connected") {
-            // A clean connected snapshot means whatever failure we previously
-            // recorded is now stale — drop the cached log/cause so the UI
-            // stops showing yesterday's error.
-            lastKernelLog.value = null;
-            lastErrorCause = null;
-            reconnecting.value = false;
-            startTrafficPoll();
-            void refreshProxies().then(() => restoreSelections());
-          } else {
-            stopTrafficPoll();
-            // Leaving "connected" invalidates the proxy snapshot — the kernel
-            // process is being torn down (or has already errored), so any
-            // cached selector "now" / latency map will only mislead the user
-            // until the next successful connect refreshes them.
-            if (proxies.value.length > 0) proxies.value = [];
-          }
-        },
-      );
+      const off = await listen<ConnectionState>('xboard://connection-state', e => {
+        if (live(version)) applyState(e.payload);
+      });
+      if (!live(version)) { off(); return; }
+      unlisten = off;
     }
     if (!unlistenKernelFailure) {
-      unlistenKernelFailure = await listen<KernelFailurePayload>(
-        "connection://kernel-failure",
-        (e) => {
-          const payload = e.payload;
-          lastErrorCause = payload.kind;
-          lastKernelLog.value = payload.log_tail ?? null;
-          // Build a human-readable cause for `connect.status.error`. Use the
-          // exit code when we have one (typical for `exited`), otherwise a
-          // generic label so the UI never renders "Connection error: ".
-          const cause =
-            payload.kind === "exited"
-              ? payload.exit_code !== undefined
-                ? `exit ${payload.exit_code}`
-                : "kernel exited"
-              : "kernel unresponsive";
-          const message = i18n.global.t("connect.status.error", {
-            message: cause,
-          });
-          // The `error` ConnectionState variant carries a mode; reuse the
-          // current/requested one since the failure event itself doesn't
-          // include it.
-          const errMode: TunnelMode =
-            state.value.kind === "connected" ||
-            state.value.kind === "connecting" ||
-            state.value.kind === "error"
-              ? state.value.mode
-              : requestedMode.value;
-          state.value = { kind: "error", message, mode: errMode };
-          stopTrafficPoll();
-          if (proxies.value.length > 0) proxies.value = [];
-          // A process that exited on its own (crash) is recoverable by
-          // respawning the kernel — kick off a bounded auto-reconnect.
-          // `unresponsive` is handled by the kernel-healthy path instead.
-          if (payload.kind === "exited") {
-            scheduleReconnect(0);
-          }
-        },
-      );
+      const off = await listen<KernelFailurePayload>('connection://kernel-failure', e => {
+        if (!live(version) || disconnecting) return;
+        const payload = e.payload;
+        lastErrorCause = payload.kind;
+        lastKernelLog.value = payload.log_tail ?? null;
+        const cause = payload.kind === 'exited'
+          ? payload.exit_code !== undefined ? `exit ${payload.exit_code}` : 'kernel exited'
+          : 'kernel unresponsive';
+        applyState({ kind: 'error', message: i18n.global.t('connect.status.error', { message: cause }), mode: currentMode.value });
+        if (payload.kind === 'exited') scheduleReconnect(0);
+      });
+      if (!live(version)) { off(); return; }
+      unlistenKernelFailure = off;
     }
     if (!unlistenKernelHealthy) {
-      unlistenKernelHealthy = await listen<Record<string, never>>(
-        "connection://kernel-healthy",
-        () => {
-          // Only auto-recover from a transient `unresponsive` stall — an
-          // `exited` kernel needs a fresh connect() to respawn the process,
-          // and the connection-state listener will publish that.
-          if (
-            state.value.kind === "error" &&
-            lastErrorCause === "unresponsive"
-          ) {
-            state.value = {
-              kind: "connected",
-              // Best-effort: we don't have the original `since` / mixed_port
-              // here, so seed them from `now` / 0. The next `connection-state`
-              // broadcast (or hydrate) will overwrite this with the real
-              // KernelManager snapshot.
-              since: new Date().toISOString(),
-              mode: state.value.mode,
-              mixed_port: 0,
-            };
-            lastErrorCause = null;
-            lastKernelLog.value = null;
-            startTrafficPoll();
-            void refreshProxies();
-          }
-        },
-      );
+      const off = await listen('connection://kernel-healthy', async () => {
+        if (!live(version) || lastErrorCause !== 'unresponsive' || disconnecting) return;
+        const revision = stateRevision;
+        try {
+          const snapshot = await api.connectionState();
+          if (live(version) && revision === stateRevision) applyState(snapshot);
+        } catch { /* Wait for an authoritative state instead of inventing port/since. */ }
+      });
+      if (!live(version)) { off(); return; }
+      unlistenKernelHealthy = off;
     }
-    if (state.value.kind === "connected") {
-      startTrafficPoll();
-      void refreshProxies();
+    const revision = stateRevision;
+    const snapshot = await api.connectionState();
+    if (!live(version) || revision !== stateRevision) return;
+    applyState(snapshot);
+    if (snapshot.kind === 'disconnected') {
+      await api.setTunnelMode(mode.value);
+      if (!live(version)) return;
+      const savedGuard = localStorage.getItem('sufe.proxyGuard');
+      if (savedGuard !== null) await api.setProxyGuardEnabled(savedGuard !== '0');
     }
   }
 
   async function connect() {
-    // A deliberate connect supersedes any pending auto-reconnect.
+    const owner = auth.session, lifecycle = generation;
+    if (cleanup) await cleanup;
+    if (!auth.session) throw new Error('请先登录后再连接。');
+    if (owner !== auth.session || lifecycle !== generation) return;
+    if (!active) await hydrate();
+    if (owner !== auth.session || lifecycle !== generation || !active || isBusy.value || isConnected.value) return;
     cancelReconnect();
-    // Capture the mode the user is asking for *before* the connect call —
-    // KernelManager may downgrade silently and we need the original intent
-    // to detect that.
+    disconnecting = false;
+    const version = generation, request = ++operation;
     requestedMode.value = mode.value;
-    state.value = await api.connect();
-    if (state.value.kind === "connected") {
-      await refreshProxies();
+    applyState({ kind: 'connecting', stage: 'fetching', mode: mode.value });
+    try {
+      const snapshot = await track(api.connect());
+      if (live(version) && request === operation) applyState(snapshot);
+    } catch (error) {
+      if (live(version) && request === operation) {
+        applyState({ kind: 'error', mode: mode.value, message: error instanceof Error ? error.message : String(error) });
+      }
+      throw error;
     }
   }
 
   async function disconnect() {
-    // A deliberate disconnect cancels any in-flight auto-reconnect.
     cancelReconnect();
-    await api.disconnect();
-    // Listener will publish `disconnected`; reset traffic eagerly so the UI
-    // doesn't briefly flash stale numbers.
-    traffic.value = { up: 0, down: 0, up_total: 0, down_total: 0 };
+    disconnecting = true;
+    const version = generation, request = ++operation;
+    // A connect may still be fetching a subscription before it reaches the
+    // kernel mutex. Disconnect after that command settles so it cannot win.
+    const outstanding = [...mutations];
+    if (outstanding.length) await Promise.allSettled(outstanding);
+    try {
+      const snapshot = await track(api.disconnect());
+      if (live(version) && request === operation) applyState(snapshot);
+    } finally {
+      if (version === generation && request === operation) disconnecting = false;
+    }
   }
 
-  /// Bounded auto-reconnect after a kernel crash. Retries `api.reconnect()`
-  /// with [1s, 3s, 6s] backoff; stops on the first connected result or when
-  /// the user manually (dis)connects. The connection-state listener clears
-  /// `reconnecting` once a connected snapshot lands.
   function scheduleReconnect(attempt: number) {
-    if (attempt >= RECONNECT_BACKOFFS_MS.length) {
+    if (!active || !auth.session || attempt >= RECONNECT_BACKOFFS_MS.length) {
       reconnecting.value = false;
       return;
     }
+    if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
     reconnectCancelled = false;
     reconnecting.value = true;
+    const version = generation, request = operation;
     reconnectTimer = window.setTimeout(async () => {
-      if (reconnectCancelled) return;
+      reconnectTimer = null;
+      if (!live(version) || reconnectCancelled || request !== operation) return;
       try {
-        const st = await api.reconnect();
-        state.value = st;
-        if (st.kind === "connected") {
-          reconnecting.value = false;
-          await refreshProxies();
-          return;
-        }
-      } catch {
-        // fall through to the next attempt
-      }
-      if (!reconnectCancelled) scheduleReconnect(attempt + 1);
+        const snapshot = await track(api.reconnect());
+        if (!live(version) || reconnectCancelled || request !== operation) return;
+        applyState(snapshot);
+        if (snapshot.kind === 'connected') return;
+      } catch { /* Retry only while this lifecycle and operation still own the request. */ }
+      if (live(version) && !reconnectCancelled && request === operation) scheduleReconnect(attempt + 1);
     }, RECONNECT_BACKOFFS_MS[attempt]);
   }
 
   function cancelReconnect() {
     reconnectCancelled = true;
-    if (reconnectTimer !== null) {
-      window.clearTimeout(reconnectTimer);
-      reconnectTimer = null;
-    }
+    if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
     reconnecting.value = false;
   }
 
   async function setMode(next: TunnelMode) {
-    mode.value = next;
-    requestedMode.value = next;
+    if (!auth.session) return;
+    const version = generation;
+    if (cleanup) await cleanup;
+    if (version !== generation || !auth.session) return;
     await api.setTunnelMode(next);
-    // If the user switches mode while connected, transparently reconnect so
-    // the new mode takes effect — KernelManager only consumes requested_mode
-    // on the next `connect()`.
-    if (state.value.kind === "connected") {
+    if (version !== generation || !auth.session) return;
+    mode.value = requestedMode.value = next;
+    localStorage.setItem('sufe.tunnelMode', next);
+    if (isConnected.value) {
       await disconnect();
-      await connect();
+      if (version === generation && auth.session) await connect();
     }
   }
 
   async function refreshProxies() {
+    if (!active || !auth.session || !isConnected.value) return;
+    const version = generation, request = ++proxyRequest;
     try {
-      proxies.value = await api.proxies();
+      const snapshot = await api.proxies();
+      if (live(version) && isConnected.value && request === proxyRequest) proxies.value = snapshot;
     } catch {
-      // Kernel might briefly be unreachable just after spawn; the next poll
-      // tick will retry.
-      proxies.value = [];
+      if (live(version) && request === proxyRequest) proxies.value = [];
     }
   }
 
   async function selectProxy(group: string, name: string) {
+    if (!active || !auth.session || !isConnected.value) return;
+    const version = generation;
     await api.selectProxy(group, name);
-    saveSelection(group, name);
+    if (!live(version) || !isConnected.value) return;
+    try { localStorage.setItem(`xboard.sel.${group}`, name); } catch { /* Optional persistence. */ }
     await refreshProxies();
   }
 
-  // Persist the user's per-group node choice so a reconnect / app restart
-  // restores it instead of snapping back to the group default — a top
-  // annoyance vs. mature clients.
-  function saveSelection(group: string, name: string) {
-    try {
-      localStorage.setItem(`xboard.sel.${group}`, name);
-    } catch {
-      // localStorage may be unavailable in some webviews; non-fatal.
-    }
-  }
-
   async function restoreSelections() {
+    const version = generation;
     let changed = false;
-    for (const g of proxies.value) {
+    for (const group of proxies.value) {
+      if (!live(version) || !isConnected.value || disconnecting) return;
       let saved: string | null = null;
-      try {
-        saved = localStorage.getItem(`xboard.sel.${g.name}`);
-      } catch {
-        saved = null;
-      }
-      if (saved && saved !== g.now && g.all.includes(saved)) {
-        try {
-          await api.selectProxy(g.name, saved);
-          changed = true;
-        } catch {
-          // node may be temporarily unavailable; skip
-        }
+      try { saved = localStorage.getItem(`xboard.sel.${group.name}`); } catch { /* Optional persistence. */ }
+      if (saved && saved !== group.now && group.all.includes(saved)) {
+        try { await api.selectProxy(group.name, saved); changed = true; } catch { /* Node may be unavailable. */ }
       }
     }
-    if (changed) await refreshProxies();
+    if (changed && live(version) && isConnected.value) await refreshProxies();
   }
 
   function startTrafficPoll() {
     if (trafficTimer !== null) return;
+    const version = generation, poll = ++trafficGeneration;
     const tick = async () => {
       try {
-        traffic.value = await api.currentTraffic();
-        // Feed the live chart, capping the ring buffer.
-        trafficHistory.value.push({
-          up: traffic.value.up,
-          down: traffic.value.down,
-        });
-        if (trafficHistory.value.length > TRAFFIC_HISTORY_LEN) {
-          trafficHistory.value.splice(
-            0,
-            trafficHistory.value.length - TRAFFIC_HISTORY_LEN,
-          );
-        }
-      } catch {
-        // ignore — likely a transient kernel/control issue
-      }
+        const snapshot = await api.currentTraffic();
+        if (!live(version) || poll !== trafficGeneration || !isConnected.value) return;
+        traffic.value = snapshot;
+        trafficHistory.value.push({ up: snapshot.up, down: snapshot.down });
+        if (trafficHistory.value.length > TRAFFIC_HISTORY_LEN) trafficHistory.value.shift();
+      } catch { /* A temporary control-plane failure must not erase session state. */ }
+      if (live(version) && poll === trafficGeneration && isConnected.value)
+        trafficTimer = window.setTimeout(tick, TRAFFIC_POLL_MS);
     };
-    void tick();
-    trafficTimer = window.setInterval(tick, TRAFFIC_POLL_MS);
+    // Schedule rather than overlap requests when the control plane is slow.
+    trafficTimer = window.setTimeout(tick, 0);
   }
 
   function stopTrafficPoll() {
-    if (trafficTimer !== null) {
-      window.clearInterval(trafficTimer);
-      trafficTimer = null;
-    }
+    trafficGeneration++;
+    if (trafficTimer !== null) window.clearTimeout(trafficTimer);
+    trafficTimer = null;
     trafficHistory.value = [];
+    traffic.value = { up: 0, down: 0, up_total: 0, down_total: 0 };
   }
 
   async function dispose() {
+    active = false;
+    generation++;
+    operation++;
+    proxyRequest++;
+    hydration = null;
     cancelReconnect();
     stopTrafficPoll();
-    if (unlisten) {
-      unlisten();
-      unlisten = null;
-    }
-    if (unlistenKernelFailure) {
-      unlistenKernelFailure();
-      unlistenKernelFailure = null;
-    }
-    if (unlistenKernelHealthy) {
-      unlistenKernelHealthy();
-      unlistenKernelHealthy = null;
-    }
+    unlisten?.(); unlisten = null;
+    unlistenKernelFailure?.(); unlistenKernelFailure = null;
+    unlistenKernelHealthy?.(); unlistenKernelHealthy = null;
+    state.value = { kind: 'disconnected' };
+    proxies.value = [];
+    lastKernelLog.value = null;
+    lastErrorCause = null;
+    disconnecting = false;
+  }
+
+  function endSession(): Promise<void> {
+    if (cleanup) return cleanup;
+    // Dispose synchronously before awaiting IPC; late traffic/events cannot
+    // repopulate the logged-out UI. New sessions wait for kernel cleanup.
+    void dispose();
+    const outstanding = [...mutations];
+    const task = (async () => {
+      await Promise.allSettled(outstanding);
+      await api.disconnect();
+    })();
+    cleanup = task;
+    void task.finally(() => { if (cleanup === task) cleanup = null; }).catch(() => undefined);
+    return task;
   }
 
   return {
@@ -391,6 +384,7 @@ export const useConnectionStore = defineStore("connection", () => {
     refreshProxies,
     selectProxy,
     dispose,
+    endSession,
   };
 });
 
