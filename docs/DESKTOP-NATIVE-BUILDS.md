@@ -12,6 +12,17 @@
 
 默认内核版本来自 `ci/mihomo-version.txt`。2026-09-09 官方 `releases/latest` 仍为稳定 `v1.19.30`，下载需匹配 `ci/checksums/v1.19.30.sha256`。Windows/Linux amd64 默认 compatible，macOS 使用对应官方 arm64/amd64 归档。
 
+## 本次产物记录
+
+Linux 最终包已在 [run 34311212645](https://github.com/Shannon-x/sufe-client/actions/runs/34311212645) 的 Linux job 构建并验证成功，源码为 `46440c6704cd755aa62dce5133ade0e1aec6b7f3`。18 项脚本检查、20 项 Linux Rust 检查全部通过。deb 自动依赖包含 WebKitGTK 4.1、GTK 3、ayatana appindicator、libcap2-bin 与 iproute2；已验证普通用户内核实际创建和清理 TUN，两种包均完成 12 秒 GUI 启动检查。
+
+| Linux 安装文件 | 大小 | SHA256 |
+| --- | ---: | --- |
+| [deb](../artifacts/desktop/x86_64-unknown-linux-gnu/Sufe_0.1.0_amd64.deb) | 24,861,546 字节 | `40becc3fd737fc73e857235faf8357510abeea6dfe11c1241381375ef4633d6d` |
+| [AppImage](../artifacts/desktop/x86_64-unknown-linux-gnu/Sufe_0.1.0_amd64.AppImage) | 100,276,728 字节 | `559f0d1ab3a031b514320d63ec9bd69fd4828f4d2b73a2f89788fde4bf4d2f6b` |
+
+下载文件保留于 `artifacts/desktop/x86_64-unknown-linux-gnu`，同目录的 `delivery-provenance.json`、`verification.txt`、`linux-tun-smoke.json` 记录来源与实际检查。建议通过 `sudo apt install ./Sufe_0.1.0_amd64.deb` 安装依赖。AppImage 下载后先执行 `chmod +x Sufe_0.1.0_amd64.AppImage`。
+
 ## 产物必须通过的检查
 
 - macOS：app 内存在 UI、mihomo 和 helper；三者架构匹配；整个 app 的 ad-hoc 签名有效；内核 `-v` 对应固定版本。两侧车预签必须连续两次产生相同 SHA256，桌面构建嵌入这些校验值，成包中的完整文件必须仍与它们相同。CI 在临时 runner 安装真实 helper，验证 owner IPC、旧路径协议拒绝、受限 controller、独立 TUN 创建及停止；关闭自动路由与 DNS，不使用真实订阅，并校验默认路由不变，最终卸载测试组件。

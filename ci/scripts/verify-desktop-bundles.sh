@@ -22,7 +22,9 @@ case "$TRIPLE" in
     for binary in xboard-desktop mihomo xboard-helper; do
       path="${APP}/Contents/MacOS/${binary}"
       test -x "$path"
-      lipo -verify_arch "$ARCH" "$path"
+      # lipo consumes every argument after -verify_arch as an architecture.
+      # Keep the input path before the command on Apple's native tool.
+      lipo "$path" -verify_arch "$ARCH"
       file "$path" >> "$REPORT"
     done
     codesign --verify --deep --strict "$APP"

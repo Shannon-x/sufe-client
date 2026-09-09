@@ -45,7 +45,7 @@ Chatwoot 需配置运营方自己的 Public API Inbox，默认关闭；已接入
 
 ## 检查与文档
 
-本轮已确认：Rust 核心测试 **96/96**、桌面 Playwright **22/22**（包括 4 项生产 CSP 回归）、账单计算测试 **3/3**，前端生产构建通过，npm 依赖审计 **0** 项已知漏洞。iOS 的 **27/27** 个 Swift 文件通过语法解析，验证码 JavaScript 的 **3/3** 组模拟服务商检查通过；这些不替代 Xcode 编译或真实网络、支付和验证码验收。
+本轮 Rust 核心回归 **111 项通过、1 项默认忽略**，真实 mihomo 配置校验已另行显式执行。Windows 最终安装器、权限服务和实际 TUN 创建/清理验证通过；Linux 原生构建、38 项定向检查、TUN 和两种包的 GUI 启动通过。原有桌面 Playwright **22/22**、账单 **3/3** 和生产构建通过，本轮另重跑连接与 CSP 的 10 项回归。iOS **27/27** Swift 语法解析及 **3/3** 验证码模拟检查不替代 Xcode 或设备验收。
 
 本地审阅包为 [Windows NSIS](artifacts/Sufe_0.1.0_x64-setup.exe) 与 [Android APK](artifacts/Sufe-0.1.0-android-debug.apk)，均采用 debug 构建。SHA256、具体测试证据与设备验收边界见 [交付记录](docs/delivery-status.md)。macOS/Linux 的原生构建与安装说明见 [平台构建记录](docs/DESKTOP-NATIVE-BUILDS.md)；默认 TUN 的权限与升级机制见 [桌面 TUN](docs/DESKTOP-TUN.md)。
 

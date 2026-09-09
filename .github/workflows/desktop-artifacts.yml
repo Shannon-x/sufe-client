@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
   push:
     branches: [codex/tun-native-build]
+    paths-ignore: ['**/*.md']
 
 permissions:
   contents: read
@@ -65,6 +66,8 @@ jobs:
         with:
           workspaces: '. -> target'
           key: desktop-artifacts-${{ matrix.target }}
+          cache-on-failure: 'true'
+          cache-workspace-crates: 'true'
       - name: Install frontend dependencies
         working-directory: desktop
         run: npm ci --no-audit --fund=false
